@@ -1,0 +1,17 @@
+# Rust
+/target
+
+# Python
+/build
+/dist
+*.pyc
+__pycache__/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Generated files
+*.json
+*.csv
