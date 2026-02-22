@@ -425,58 +425,21 @@ impl QualityScorer {
             _ => {}
         }
 
-        // Elite gate: 保留 90+ 的准入门槛，但对非 elite 曲目使用软压缩而非硬钉在 89。
-        if total_score > 90.0 && !self.qualifies_for_elite_90(metrics, status) {
-            total_score = self.compress_non_elite_high_score(total_score, metrics);
-        }
+        total_score = self.apply_continuous_scaling(total_score, metrics);
 
         const HARD_MAX_SCORE: i32 = 99;
         (total_score.clamp(0.0, HARD_MAX_SCORE as f64).round() as i32).clamp(0, HARD_MAX_SCORE)
     }
 
-    fn qualifies_for_elite_90(&self, metrics: &FileMetrics, status: &QualityStatus) -> bool {
-        if *status != QualityStatus::Good {
-            return false;
+    fn apply_continuous_scaling(&self, raw_score: f64, metrics: &FileMetrics) -> f64 {
+        const THRESHOLD: f64 = 82.0;
+        if raw_score <= THRESHOLD {
+            return raw_score;
         }
-
-        let Some(i_lufs) = metrics.integrated_loudness_lufs else {
-            return false;
-        };
-        let Some(tp) = metrics.true_peak_dbtp else {
-            return false;
-        };
-        let Some(lra) = metrics.lra else {
-            return false;
-        };
-        let Some(rms18) = metrics.rms_db_above_18k else {
-            return false;
-        };
-
-        let (elite_loudness_min, elite_loudness_max) = self.elite_loudness_range();
-        let loudness_ok = (elite_loudness_min..=elite_loudness_max).contains(&i_lufs);
-
-        let true_peak_ok = tp <= self.elite_true_peak_max();
-
-        let (elite_lra_min, elite_lra_max) = self.elite_lra_range();
-        let lra_ok = (elite_lra_min..=elite_lra_max).contains(&lra);
-
-        let spectrum_ok = rms18 >= self.config.spectrum_processed_threshold;
-        let bitrate_ok = if self.is_lossy(metrics) {
-            matches!(metrics.bitrate_kbps, Some(b) if b >= self.config.bitrate_high_kbps)
-        } else {
-            true
-        };
-
-        loudness_ok && true_peak_ok && lra_ok && spectrum_ok && bitrate_ok
-    }
-
-    fn compress_non_elite_high_score(&self, raw_score: f64, metrics: &FileMetrics) -> f64 {
-        let high_band_progress = ((raw_score - 90.0) / 9.0).clamp(0.0, 1.0);
-        let elite_readiness = self.estimate_elite_readiness(metrics);
-
-        // 将原本集中在 89 的分数拉开到 85-89 区间，提升高分段区分度。
-        let compressed = 85.0 + high_band_progress * 2.0 + elite_readiness * 2.0;
-        compressed.clamp(85.0, 89.0)
+        let readiness = self.estimate_elite_readiness(metrics);
+        let keep_ratio = 0.15 + readiness.powf(0.7) * 0.85;
+        let excess = raw_score - THRESHOLD;
+        THRESHOLD + excess * keep_ratio
     }
 
     fn estimate_elite_readiness(&self, metrics: &FileMetrics) -> f64 {
@@ -995,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn test_non_elite_high_scores_are_soft_compressed() {
+    fn test_non_elite_high_scores_are_continuously_scaled() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
         metrics.true_peak_dbtp = Some(0.3);
@@ -1003,7 +966,9 @@ mod tests {
         assert_eq!(status, QualityStatus::TruePeakRisk);
 
         let score = scorer.calculate_quality_score(&metrics, &status);
-        assert!((85..=89).contains(&score));
+        // With continuous scaling, score depends on elite_readiness.
+        // TruePeakRisk caps raw at 92, then scaling compresses from 82.
+        assert!((80..=92).contains(&score));
     }
 
     #[test]
@@ -1040,5 +1005,38 @@ mod tests {
         for analysis in &analyses {
             assert!(analysis.quality_score > 0);
         }
+    }
+
+    #[test]
+    fn test_continuous_scaling_spread() {
+        let scorer = QualityScorer::new();
+
+        // Low readiness: poor true peak → low readiness → heavier compression
+        let mut low_ready = create_test_metrics();
+        low_ready.true_peak_dbtp = Some(0.05); // near warn threshold, still Good status
+        low_ready.rms_db_above_18k = Some(-82.0); // below processed threshold
+        low_ready.lra = Some(4.0); // below elite LRA min
+
+        // High readiness: perfect metrics
+        let high_ready = create_test_metrics(); // already has good defaults
+
+        let low_status = scorer.determine_status(&low_ready);
+        let high_status = scorer.determine_status(&high_ready);
+
+        let low_score = scorer.calculate_quality_score(&low_ready, &low_status);
+        let high_score = scorer.calculate_quality_score(&high_ready, &high_status);
+
+        // High readiness track should score notably higher than low readiness track
+        assert!(
+            high_score > low_score,
+            "high readiness ({high_score}) should beat low readiness ({low_score})"
+        );
+        // Scores should be spread, not clustered in 88-89
+        assert!(
+            high_score - low_score >= 3,
+            "spread should be >= 3 pts, got {} vs {}",
+            high_score,
+            low_score
+        );
     }
 }
