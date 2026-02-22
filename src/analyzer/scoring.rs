@@ -425,9 +425,9 @@ impl QualityScorer {
             _ => {}
         }
 
-        // Elite gate: 只有关键指标均达标时才允许进入 90+，避免高分段拥挤。
+        // Elite gate: 保留 90+ 的准入门槛，但对非 elite 曲目使用软压缩而非硬钉在 89。
         if total_score > 90.0 && !self.qualifies_for_elite_90(metrics, status) {
-            total_score = 89.0;
+            total_score = self.compress_non_elite_high_score(total_score, metrics);
         }
 
         const HARD_MAX_SCORE: i32 = 99;
@@ -452,23 +452,13 @@ impl QualityScorer {
             return false;
         };
 
-        let loudness_ok = match self.profile {
-            ScoringProfile::Pop => (-10.5..=-7.5).contains(&i_lufs),
-            ScoringProfile::Broadcast => (-24.0..=-22.0).contains(&i_lufs),
-            ScoringProfile::Archive => (-20.0..=-12.0).contains(&i_lufs),
-        };
+        let (elite_loudness_min, elite_loudness_max) = self.elite_loudness_range();
+        let loudness_ok = (elite_loudness_min..=elite_loudness_max).contains(&i_lufs);
 
-        let true_peak_ok = match self.profile {
-            ScoringProfile::Pop => tp <= -0.2,
-            ScoringProfile::Broadcast => tp <= -1.0,
-            ScoringProfile::Archive => tp <= -0.3,
-        };
+        let true_peak_ok = tp <= self.elite_true_peak_max();
 
-        let lra_ok = match self.profile {
-            ScoringProfile::Pop => (4.5..=11.0).contains(&lra),
-            ScoringProfile::Broadcast => (6.0..=15.0).contains(&lra),
-            ScoringProfile::Archive => (4.0..=16.0).contains(&lra),
-        };
+        let (elite_lra_min, elite_lra_max) = self.elite_lra_range();
+        let lra_ok = (elite_lra_min..=elite_lra_max).contains(&lra);
 
         let spectrum_ok = rms18 >= self.config.spectrum_processed_threshold;
         let bitrate_ok = if self.is_lossy(metrics) {
@@ -478,6 +468,185 @@ impl QualityScorer {
         };
 
         loudness_ok && true_peak_ok && lra_ok && spectrum_ok && bitrate_ok
+    }
+
+    fn compress_non_elite_high_score(&self, raw_score: f64, metrics: &FileMetrics) -> f64 {
+        let high_band_progress = ((raw_score - 90.0) / 9.0).clamp(0.0, 1.0);
+        let elite_readiness = self.estimate_elite_readiness(metrics);
+
+        // 将原本集中在 89 的分数拉开到 85-89 区间，提升高分段区分度。
+        let compressed = 85.0 + high_band_progress * 2.0 + elite_readiness * 2.0;
+        compressed.clamp(85.0, 89.0)
+    }
+
+    fn estimate_elite_readiness(&self, metrics: &FileMetrics) -> f64 {
+        let (elite_loudness_min, elite_loudness_max) = self.elite_loudness_range();
+        let loudness_score = metrics
+            .integrated_loudness_lufs
+            .map(|value| {
+                self.soft_band_score(
+                    value,
+                    elite_loudness_min,
+                    elite_loudness_max,
+                    self.config.loudness_soft_range_low,
+                    self.config.loudness_soft_range_high,
+                )
+            })
+            .unwrap_or(0.0);
+
+        let tp_score = metrics
+            .true_peak_dbtp
+            .map(|tp| {
+                let elite_tp_max = self.elite_true_peak_max();
+                let soft_tp_max = self.config.true_peak_critical.max(elite_tp_max + 0.6);
+                if tp <= elite_tp_max {
+                    1.0
+                } else if tp <= soft_tp_max {
+                    self.map_to_score(tp, elite_tp_max, soft_tp_max, 1.0, 0.0)
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or_else(|| {
+                metrics
+                    .peak_amplitude_db
+                    .map(|peak| {
+                        if peak <= -1.0 {
+                            0.9
+                        } else if peak <= 0.0 {
+                            self.map_to_score(peak, -1.0, 0.0, 0.9, 0.0)
+                        } else {
+                            0.0
+                        }
+                    })
+                    .unwrap_or(0.0)
+            });
+
+        let (elite_lra_min, elite_lra_max) = self.elite_lra_range();
+        let lra_score = metrics
+            .lra
+            .map(|value| {
+                self.soft_band_score(
+                    value,
+                    elite_lra_min,
+                    elite_lra_max,
+                    self.config.lra_low_max,
+                    self.config.lra_acceptable_max,
+                )
+            })
+            .unwrap_or(0.0);
+
+        let spectrum_score = metrics
+            .rms_db_above_18k
+            .map(|value| {
+                if value >= self.config.spectrum_processed_threshold {
+                    self.map_to_score(
+                        value,
+                        self.config.spectrum_processed_threshold,
+                        self.config.spectrum_good_threshold,
+                        0.7,
+                        1.0,
+                    )
+                } else if value >= self.config.spectrum_fake_threshold {
+                    self.map_to_score(
+                        value,
+                        self.config.spectrum_fake_threshold,
+                        self.config.spectrum_processed_threshold,
+                        0.0,
+                        0.7,
+                    )
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
+
+        let bitrate_score = if self.is_lossy(metrics) {
+            metrics
+                .bitrate_kbps
+                .map(|bitrate| {
+                    let bitrate = bitrate as f64;
+                    if bitrate >= self.config.bitrate_high_kbps as f64 {
+                        1.0
+                    } else if bitrate >= self.config.bitrate_low_kbps as f64 {
+                        self.map_to_score(
+                            bitrate,
+                            self.config.bitrate_low_kbps as f64,
+                            self.config.bitrate_high_kbps as f64,
+                            0.35,
+                            1.0,
+                        )
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0)
+        } else {
+            1.0
+        };
+
+        let readiness = loudness_score * 0.26
+            + tp_score * 0.20
+            + lra_score * 0.22
+            + spectrum_score * 0.20
+            + bitrate_score * 0.12;
+        readiness.clamp(0.0, 1.0)
+    }
+
+    fn elite_loudness_range(&self) -> (f64, f64) {
+        match self.profile {
+            ScoringProfile::Pop => (-10.5, -7.5),
+            ScoringProfile::Broadcast => (-24.0, -22.0),
+            ScoringProfile::Archive => (-20.0, -12.0),
+        }
+    }
+
+    fn elite_true_peak_max(&self) -> f64 {
+        match self.profile {
+            ScoringProfile::Pop => -0.2,
+            ScoringProfile::Broadcast => -1.0,
+            ScoringProfile::Archive => -0.3,
+        }
+    }
+
+    fn elite_lra_range(&self) -> (f64, f64) {
+        match self.profile {
+            ScoringProfile::Pop => (4.5, 11.0),
+            ScoringProfile::Broadcast => (6.0, 15.0),
+            ScoringProfile::Archive => (4.0, 16.0),
+        }
+    }
+
+    fn soft_band_score(
+        &self,
+        value: f64,
+        preferred_min: f64,
+        preferred_max: f64,
+        soft_min: f64,
+        soft_max: f64,
+    ) -> f64 {
+        if value >= preferred_min && value <= preferred_max {
+            return 1.0;
+        }
+
+        if value < preferred_min {
+            if preferred_min <= soft_min {
+                return 0.0;
+            }
+            if value >= soft_min {
+                return self.map_to_score(value, soft_min, preferred_min, 0.0, 1.0);
+            }
+            return 0.0;
+        }
+
+        if preferred_max >= soft_max {
+            return 0.0;
+        }
+        if value <= soft_max {
+            return self.map_to_score(value, preferred_max, soft_max, 1.0, 0.0);
+        }
+
+        0.0
     }
 
     fn calculate_compliance_score(&self, metrics: &FileMetrics) -> f64 {
@@ -823,6 +992,29 @@ mod tests {
         let status = QualityStatus::Good;
         let score = scorer.calculate_quality_score(&metrics, &status);
         assert!((70..=99).contains(&score));
+    }
+
+    #[test]
+    fn test_non_elite_high_scores_are_soft_compressed() {
+        let scorer = QualityScorer::new();
+        let mut metrics = create_test_metrics();
+        metrics.true_peak_dbtp = Some(0.3);
+        let status = scorer.determine_status(&metrics);
+        assert_eq!(status, QualityStatus::TruePeakRisk);
+
+        let score = scorer.calculate_quality_score(&metrics, &status);
+        assert!((85..=89).contains(&score));
+    }
+
+    #[test]
+    fn test_elite_track_can_stay_in_90_plus() {
+        let scorer = QualityScorer::new();
+        let metrics = create_test_metrics();
+        let status = scorer.determine_status(&metrics);
+        assert_eq!(status, QualityStatus::Good);
+
+        let score = scorer.calculate_quality_score(&metrics, &status);
+        assert!(score >= 90);
     }
 
     #[test]

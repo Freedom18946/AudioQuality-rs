@@ -68,7 +68,8 @@ AudioQuality-rs [PATH] [OPTIONS]
 - `Spectrum/Authenticity`：基于高频段 RMS 与容器/编码推断
 - `Integrity`：基于关键字段完整性与错误码
 - 默认 `pop` 档案以流媒体音乐为目标（A-pop/J-pop/K-pop），可切换 `broadcast/archive`
-- `90+` 仅授予通过 elite gate 的曲目（关键指标同时优秀），其余分数最高为 `89`
+- `90+` 仅授予通过 elite gate 的曲目（关键指标同时优秀）
+- 未通过 elite gate 但原始总分大于 `90` 的曲目，会按 `elite_readiness` 连续压缩到 `85-89`，避免大量堆积在单一分数
 
 ## 开发与测试
 
