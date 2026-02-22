@@ -26,3 +26,9 @@ pub mod scoring;
 /// 声明 `report` 子模块。
 /// `pub` 关键字使其成为公共模块。该模块负责生成CSV报告和排名显示功能。
 pub mod report;
+
+/// 增量缓存模块，负责缓存命中和一致性校验。
+pub mod cache;
+
+/// 安全文件输出模块，负责原子写入和路径安全检查。
+pub mod safe_io;

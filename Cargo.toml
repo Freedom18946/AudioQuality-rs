@@ -17,6 +17,7 @@ anyhow = "1.0"
 tempfile = "3.10.1"
 csv = "1.3" # 新增：用于生成CSV报告
 which = "4.4" # 新增：用于在系统 PATH 中查找 ffmpeg
+sha2 = "0.10" # 新增：用于增量缓存内容哈希
 
 # 命令行和UI
 indicatif = "0.17"
@@ -39,4 +40,3 @@ inherits = "release"
 lto = "fat"          # 最大化链接时优化
 codegen-units = 1    # 单一代码生成单元以最大化优化机会
 opt-level = 3        # 最高优化级别
-

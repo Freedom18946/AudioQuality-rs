@@ -45,11 +45,10 @@ pub struct FileMetrics {
     /// 文件的大小，单位是字节 (bytes)。
     #[serde(rename = "fileSizeBytes")]
     pub file_size_bytes: u64,
-    
+
     // --- 核心音频指标 ---
     // 所有指标都定义为 `Option<f64>`，因为 FFmpeg 在分析过程中可能因各种原因
     // (如文件损坏、格式不支持等) 而无法提取某个特定指标。这种设计增强了程序的健壮性。
-
     /// 响度范围 (Loudness Range, LRA)，单位是 LU (Loudness Units)。
     /// 它衡量了音频宏观动态范围的大小。
     #[serde(rename = "lra")]
@@ -78,9 +77,45 @@ pub struct FileMetrics {
     /// 这是判断“假无损”的重要参考指标之一。
     #[serde(rename = "rmsDbAbove20k")]
     pub rms_db_above_20k: Option<f64>,
-    
+
     /// 处理单个文件所花费的时间，单位是毫秒 (ms)。
     /// 用于性能评估。
     #[serde(rename = "processingTimeMs")]
     pub processing_time_ms: u64,
+
+    /// 采样率（Hz），来自 ffprobe 元数据。
+    #[serde(rename = "sampleRateHz")]
+    pub sample_rate_hz: Option<u32>,
+
+    /// 码率（kbps），来自 ffprobe 元数据。
+    #[serde(rename = "bitrateKbps")]
+    pub bitrate_kbps: Option<u32>,
+
+    /// 声道数，来自 ffprobe 元数据。
+    #[serde(rename = "channels")]
+    pub channels: Option<u32>,
+
+    /// 音频编码器名称。
+    #[serde(rename = "codecName")]
+    pub codec_name: Option<String>,
+
+    /// 容器格式名称。
+    #[serde(rename = "containerFormat")]
+    pub container_format: Option<String>,
+
+    /// 音频时长（秒）。
+    #[serde(rename = "durationSeconds")]
+    pub duration_seconds: Option<f64>,
+
+    /// 该条目是否来自增量缓存命中。
+    #[serde(rename = "cacheHit", default)]
+    pub cache_hit: bool,
+
+    /// 文件内容 SHA-256（用于缓存一致性验证）。
+    #[serde(rename = "contentSha256")]
+    pub content_sha256: Option<String>,
+
+    /// 风险/失败原因码（例如 E_TIMEOUT, E_PARSE_LRA）。
+    #[serde(rename = "errorCodes", default)]
+    pub error_codes: Vec<String>,
 }

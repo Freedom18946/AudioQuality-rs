@@ -13,32 +13,33 @@
 // - 支持批量处理和并行评分计算
 // ================================================================
 
-use serde::{Deserialize, Serialize};
 use super::metrics::FileMetrics;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// 质量评分阈值配置
 /// 这些阈值与Python版本保持完全一致，确保评分结果的一致性
 #[derive(Debug, Clone)]
 pub struct QualityThresholds {
     // 频谱相关阈值
-    pub spectrum_fake_threshold: f64,      // -85.0 dB - 伪造音频检测阈值
-    pub spectrum_processed_threshold: f64, // -80.0 dB - 处理音频检测阈值  
-    pub spectrum_good_threshold: f64,      // -70.0 dB - 良好频谱阈值
-    
+    pub spectrum_fake_threshold: f64, // -85.0 dB - 伪造音频检测阈值
+    pub spectrum_processed_threshold: f64, // -80.0 dB - 处理音频检测阈值
+    pub spectrum_good_threshold: f64, // -70.0 dB - 良好频谱阈值
+
     // 动态范围 (LRA) 相关阈值
-    pub lra_poor_max: f64,        // 3.0 LU - 严重压缩上限
-    pub lra_low_max: f64,         // 6.0 LU - 低动态上限
-    pub lra_excellent_min: f64,   // 8.0 LU - 优秀动态下限
-    pub lra_excellent_max: f64,   // 12.0 LU - 优秀动态上限
-    pub lra_acceptable_max: f64,  // 15.0 LU - 可接受动态上限
-    pub lra_too_high: f64,        // 20.0 LU - 动态过高阈值
-    
+    pub lra_poor_max: f64,       // 3.0 LU - 严重压缩上限
+    pub lra_low_max: f64,        // 6.0 LU - 低动态上限
+    pub lra_excellent_min: f64,  // 8.0 LU - 优秀动态下限
+    pub lra_excellent_max: f64,  // 12.0 LU - 优秀动态上限
+    pub lra_acceptable_max: f64, // 15.0 LU - 可接受动态上限
+    pub lra_too_high: f64,       // 20.0 LU - 动态过高阈值
+
     // 峰值相关阈值
-    pub peak_clipping_db: f64,     // -0.1 dB - 削波检测阈值
+    pub peak_clipping_db: f64, // -0.1 dB - 削波检测阈值
     #[allow(dead_code)]
     pub peak_clipping_linear: f64, // 0.999 - 线性削波检测阈值（保留用于未来扩展）
-    pub peak_good_db: f64,         // -6.0 dB - 良好峰值阈值
-    pub peak_medium_db: f64,       // -3.0 dB - 中等峰值阈值
+    pub peak_good_db: f64,     // -6.0 dB - 良好峰值阈值
+    pub peak_medium_db: f64,   // -3.0 dB - 中等峰值阈值
 }
 
 impl Default for QualityThresholds {
@@ -78,18 +79,27 @@ pub enum QualityStatus {
     SeverelyCompressed,
     #[serde(rename = "低动态")]
     LowDynamic,
+    #[serde(rename = "低码率")]
+    LowBitrate,
+    #[serde(rename = "低采样率")]
+    LowSampleRate,
+    #[serde(rename = "单声道")]
+    Mono,
 }
 
 impl std::fmt::Display for QualityStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status_str = match self {
             QualityStatus::Good => "质量良好",
-            QualityStatus::Incomplete => "数据不完整", 
+            QualityStatus::Incomplete => "数据不完整",
             QualityStatus::Suspicious => "可疑 (伪造)",
             QualityStatus::Processed => "疑似处理",
             QualityStatus::Clipped => "已削波",
             QualityStatus::SeverelyCompressed => "严重压缩",
             QualityStatus::LowDynamic => "低动态",
+            QualityStatus::LowBitrate => "低码率",
+            QualityStatus::LowSampleRate => "低采样率",
+            QualityStatus::Mono => "单声道",
         };
         write!(f, "{status_str}")
     }
@@ -101,19 +111,19 @@ pub struct QualityAnalysis {
     /// 文件路径
     #[serde(rename = "filePath")]
     pub file_path: String,
-    
+
     /// 综合质量分数 (0-100)
     #[serde(rename = "质量分")]
     pub quality_score: i32,
-    
+
     /// 质量状态
     #[serde(rename = "状态")]
     pub status: QualityStatus,
-    
+
     /// 分析备注
     #[serde(rename = "备注")]
     pub notes: String,
-    
+
     /// 原始指标数据
     #[serde(flatten)]
     pub metrics: FileMetrics,
@@ -131,7 +141,7 @@ impl QualityScorer {
             thresholds: QualityThresholds::default(),
         }
     }
-    
+
     /// 使用自定义阈值创建评分器
     ///
     /// 此方法允许用户自定义评分阈值，用于特殊场景或实验性评分标准
@@ -139,13 +149,13 @@ impl QualityScorer {
     pub fn with_thresholds(thresholds: QualityThresholds) -> Self {
         Self { thresholds }
     }
-    
+
     /// 分析单个文件的质量
     pub fn analyze_file(&self, metrics: &FileMetrics) -> QualityAnalysis {
         let status = self.determine_status(metrics);
         let notes = self.generate_notes(metrics, &status);
         let quality_score = self.calculate_quality_score(metrics, &status);
-        
+
         QualityAnalysis {
             file_path: metrics.file_path.clone(),
             quality_score,
@@ -154,7 +164,7 @@ impl QualityScorer {
             metrics: metrics.clone(),
         }
     }
-    
+
     /// 批量分析多个文件
     /// 对于大量文件，使用并行处理来提高性能
     pub fn analyze_files(&self, metrics_list: &[FileMetrics]) -> Vec<QualityAnalysis> {
@@ -191,16 +201,31 @@ impl QualityScorer {
             return QualityStatus::Incomplete;
         }
 
-        // 检查是否为伪造音频 (基于18kHz以上频段能量)
+        // lossless + 高频异常 => 高可疑
         if let Some(rms_18k) = metrics.rms_db_above_18k {
-            if rms_18k < self.thresholds.spectrum_fake_threshold {
+            if self.is_lossless(metrics) && rms_18k < self.thresholds.spectrum_fake_threshold {
                 return QualityStatus::Suspicious;
             }
 
-            // 检查是否为疑似处理音频
             if rms_18k < self.thresholds.spectrum_processed_threshold {
                 return QualityStatus::Processed;
             }
+        }
+
+        // 有损音频低码率
+        if self.is_lossy(metrics) && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate < 192)
+        {
+            return QualityStatus::LowBitrate;
+        }
+
+        // 采样率过低
+        if matches!(metrics.sample_rate_hz, Some(sr) if sr < 44_100) {
+            return QualityStatus::LowSampleRate;
+        }
+
+        // 单声道提示
+        if matches!(metrics.channels, Some(ch) if ch < 2) {
+            return QualityStatus::Mono;
         }
 
         // 检查是否存在削波
@@ -270,11 +295,26 @@ impl QualityScorer {
                     notes.push(format!("动态范围过低 (LRA: {lra:.1} LU)，可能过度压缩。"));
                 }
             }
+            QualityStatus::LowBitrate => {
+                if let Some(bitrate) = metrics.bitrate_kbps {
+                    notes.push(format!("码率偏低 ({bitrate} kbps)，可能存在细节损失。"));
+                }
+            }
+            QualityStatus::LowSampleRate => {
+                if let Some(sample_rate) = metrics.sample_rate_hz {
+                    notes.push(format!("采样率过低 ({sample_rate} Hz)，高频上限受限。"));
+                }
+            }
+            QualityStatus::Mono => {
+                notes.push("当前文件为单声道 (mono)。".to_string());
+            }
             QualityStatus::Good => {
                 // 检查是否有其他需要注意的问题
                 if let Some(lra) = metrics.lra {
                     if lra > self.thresholds.lra_too_high {
-                        notes.push(format!("动态范围过高 (LRA: {lra:.1} LU)，可能需要压缩处理。"));
+                        notes.push(format!(
+                            "动态范围过高 (LRA: {lra:.1} LU)，可能需要压缩处理。"
+                        ));
                     }
                 }
             }
@@ -291,11 +331,11 @@ impl QualityScorer {
     fn calculate_quality_score(&self, metrics: &FileMetrics, status: &QualityStatus) -> i32 {
         // 评分体系常量定义（用于文档和理解，实际计算中直接使用数值）
         #[allow(dead_code)]
-        const MAX_SCORE_INTEGRITY: f64 = 40.0;  // 完整性评分上限
+        const MAX_SCORE_INTEGRITY: f64 = 40.0; // 完整性评分上限
         #[allow(dead_code)]
-        const MAX_SCORE_DYNAMICS: f64 = 30.0;   // 动态范围评分上限
+        const MAX_SCORE_DYNAMICS: f64 = 30.0; // 动态范围评分上限
         #[allow(dead_code)]
-        const MAX_SCORE_SPECTRUM: f64 = 30.0;   // 频谱评分上限
+        const MAX_SCORE_SPECTRUM: f64 = 30.0; // 频谱评分上限
 
         let mut integrity_score = 0.0;
         let mut dynamics_score = 0.0;
@@ -314,7 +354,29 @@ impl QualityScorer {
         spectrum_score += self.calculate_spectrum_score(metrics);
 
         // 计算总分
-        let mut total_score = integrity_score + dynamics_score + spectrum_score - completeness_penalty;
+        let mut total_score =
+            integrity_score + dynamics_score + spectrum_score - completeness_penalty;
+
+        // 额外扣分规则（与 ffprobe 元数据联动）
+        if self.is_lossy(metrics) && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate < 192)
+        {
+            total_score -= 30.0;
+        }
+
+        if self.is_lossy(metrics)
+            && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate > 256)
+            && matches!(metrics.rms_db_above_18k, Some(rms_18k) if rms_18k < self.thresholds.spectrum_processed_threshold)
+        {
+            total_score -= 25.0;
+        }
+
+        if matches!(metrics.sample_rate_hz, Some(sr) if sr < 44_100) {
+            total_score -= 20.0;
+        }
+
+        if matches!(metrics.channels, Some(ch) if ch < 2) {
+            total_score -= 5.0;
+        }
 
         // 根据状态应用额外惩罚
         match status {
@@ -391,23 +453,45 @@ impl QualityScorer {
         if let Some(lra) = metrics.lra {
             if lra > 0.0 {
                 // 理想动态范围 (8-12 LU)
-                if lra >= self.thresholds.lra_excellent_min && lra <= self.thresholds.lra_excellent_max {
+                if lra >= self.thresholds.lra_excellent_min
+                    && lra <= self.thresholds.lra_excellent_max
+                {
                     return 30.0;
                 }
 
                 // 低可接受范围 (6-8 LU)
                 if lra >= self.thresholds.lra_low_max && lra < self.thresholds.lra_excellent_min {
-                    return self.map_to_score(lra, self.thresholds.lra_low_max, self.thresholds.lra_excellent_min, 20.0, 28.0);
+                    return self.map_to_score(
+                        lra,
+                        self.thresholds.lra_low_max,
+                        self.thresholds.lra_excellent_min,
+                        20.0,
+                        28.0,
+                    );
                 }
 
                 // 高可接受范围 (12-15 LU)
-                if lra > self.thresholds.lra_excellent_max && lra <= self.thresholds.lra_acceptable_max {
-                    return self.map_to_score(lra, self.thresholds.lra_excellent_max, self.thresholds.lra_acceptable_max, 28.0, 22.0);
+                if lra > self.thresholds.lra_excellent_max
+                    && lra <= self.thresholds.lra_acceptable_max
+                {
+                    return self.map_to_score(
+                        lra,
+                        self.thresholds.lra_excellent_max,
+                        self.thresholds.lra_acceptable_max,
+                        28.0,
+                        22.0,
+                    );
                 }
 
                 // 低动态范围 (3-6 LU)
                 if lra >= self.thresholds.lra_poor_max && lra < self.thresholds.lra_low_max {
-                    return self.map_to_score(lra, self.thresholds.lra_poor_max, self.thresholds.lra_low_max, 10.0, 20.0);
+                    return self.map_to_score(
+                        lra,
+                        self.thresholds.lra_poor_max,
+                        self.thresholds.lra_low_max,
+                        10.0,
+                        20.0,
+                    );
                 }
 
                 // 极低动态范围 (0-3 LU)
@@ -434,13 +518,73 @@ impl QualityScorer {
     }
 
     /// 将数值映射到指定分数范围
-    fn map_to_score(&self, value: f64, in_min: f64, in_max: f64, out_min: f64, out_max: f64) -> f64 {
+    fn map_to_score(
+        &self,
+        value: f64,
+        in_min: f64,
+        in_max: f64,
+        out_min: f64,
+        out_max: f64,
+    ) -> f64 {
         if (in_max - in_min).abs() < f64::EPSILON {
             return out_min;
         }
 
         let clamped_value = value.clamp(in_min, in_max);
         out_min + (clamped_value - in_min) * (out_max - out_min) / (in_max - in_min)
+    }
+
+    fn is_lossless(&self, metrics: &FileMetrics) -> bool {
+        let ext = Path::new(&metrics.file_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        let codec = metrics
+            .codec_name
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        let container = metrics
+            .container_format
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        let lossless_by_ext = matches!(ext.as_str(), "flac" | "alac" | "wav" | "aiff" | "aif");
+        let lossless_by_codec = codec.starts_with("pcm_")
+            || matches!(codec.as_str(), "flac" | "alac" | "wavpack" | "ape");
+        let lossless_by_container =
+            container.contains("flac") || container.contains("wav") || container.contains("aiff");
+
+        lossless_by_ext || lossless_by_codec || lossless_by_container
+    }
+
+    fn is_lossy(&self, metrics: &FileMetrics) -> bool {
+        if self.is_lossless(metrics) {
+            return false;
+        }
+
+        let ext = Path::new(&metrics.file_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let codec = metrics
+            .codec_name
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        let lossy_by_ext = matches!(ext.as_str(), "mp3" | "aac" | "m4a" | "ogg" | "opus" | "wma");
+        let lossy_by_codec = matches!(
+            codec.as_str(),
+            "mp3" | "aac" | "vorbis" | "opus" | "wmav2" | "mp2" | "ac3"
+        );
+
+        lossy_by_ext || lossy_by_codec
     }
 }
 
@@ -460,6 +604,15 @@ mod tests {
             rms_db_above_18k: Some(-75.0),
             rms_db_above_20k: Some(-85.0),
             processing_time_ms: 1000,
+            sample_rate_hz: Some(44_100),
+            bitrate_kbps: Some(900),
+            channels: Some(2),
+            codec_name: Some("flac".to_string()),
+            container_format: Some("flac".to_string()),
+            duration_seconds: Some(60.0),
+            cache_hit: false,
+            content_sha256: Some("abc".to_string()),
+            error_codes: vec![],
         }
     }
 
@@ -594,5 +747,35 @@ mod tests {
         for analysis in &analyses {
             assert!(analysis.quality_score > 0);
         }
+    }
+
+    #[test]
+    fn test_determine_status_low_bitrate() {
+        let scorer = QualityScorer::new();
+        let mut metrics = create_test_metrics();
+        metrics.file_path = "test.mp3".to_string();
+        metrics.codec_name = Some("mp3".to_string());
+        metrics.container_format = Some("mp3".to_string());
+        metrics.bitrate_kbps = Some(128);
+        let status = scorer.determine_status(&metrics);
+        assert_eq!(status, QualityStatus::LowBitrate);
+    }
+
+    #[test]
+    fn test_determine_status_low_sample_rate() {
+        let scorer = QualityScorer::new();
+        let mut metrics = create_test_metrics();
+        metrics.sample_rate_hz = Some(32_000);
+        let status = scorer.determine_status(&metrics);
+        assert_eq!(status, QualityStatus::LowSampleRate);
+    }
+
+    #[test]
+    fn test_determine_status_mono() {
+        let scorer = QualityScorer::new();
+        let mut metrics = create_test_metrics();
+        metrics.channels = Some(1);
+        let status = scorer.determine_status(&metrics);
+        assert_eq!(status, QualityStatus::Mono);
     }
 }
