@@ -44,6 +44,7 @@ AudioQuality-rs [PATH] [OPTIONS]
 - `--jsonl` 额外生成 `audio_quality_report.jsonl`
 - `--sarif` 额外生成 `audio_quality_report.sarif.json`
 - `--profile <pop|broadcast|archive>` 评分档案（默认 `pop`，面向 A-pop/J-pop/K-pop）
+  - `pop` 默认是宽松流行乐档案：约 `-9 LUFS` 目标、`+0.1 / +1.0 dBTP` 风险阈值
 
 ## 输出文件
 
@@ -60,13 +61,14 @@ AudioQuality-rs [PATH] [OPTIONS]
 
 ## 评分说明（实现版）
 
-综合分数范围 `0-100`，由多维得分叠加并结合额外扣分：
+综合分数范围 `0-99`（硬上限，永不满分），由多维得分叠加并结合额外扣分：
 
 - `Compliance`：基于 `Integrated LUFS` + `True Peak dBTP`
 - `Dynamics`：基于 `LRA`
 - `Spectrum/Authenticity`：基于高频段 RMS 与容器/编码推断
 - `Integrity`：基于关键字段完整性与错误码
 - 默认 `pop` 档案以流媒体音乐为目标（A-pop/J-pop/K-pop），可切换 `broadcast/archive`
+- `90+` 仅授予通过 elite gate 的曲目（关键指标同时优秀），其余分数最高为 `89`
 
 ## 开发与测试
 

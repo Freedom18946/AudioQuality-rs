@@ -10,9 +10,10 @@
 
 `pop` 档案默认目标：
 
-- Target Loudness: `-14 LUFS`
-- True Peak warning: `-1.0 dBTP`
-- True Peak critical: `-0.2 dBTP`
+- Target Loudness: `-9 LUFS`（宽松流行乐基线）
+- Loudness soft range: `-13 ~ -6 LUFS`
+- True Peak warning: `+0.1 dBTP`
+- True Peak critical: `+1.0 dBTP`
 
 ## 输入指标
 
@@ -36,7 +37,7 @@
 10. `严重压缩` / `低动态`
 11. `质量良好`
 
-## 分数构成（0-100）
+## 分数构成（0-99）
 
 - Compliance：35 分（LUFS + True Peak）
 - Dynamics：20 分（LRA）
@@ -48,8 +49,11 @@
 
 - Suspicious 上限 25
 - Incomplete 上限 45
-- Clipped 上限 75
-- TruePeakRisk 上限 85
+- Clipped 上限 85
+- TruePeakRisk 上限 92
+
+最终分数存在硬上限 `99`，避免出现“满分拥挤”导致的区分度下降。
+此外，`90+` 设有 elite gate：只有关键指标（LUFS、True Peak、LRA、高频能量、码率）同时达标才允许进入 90 分以上，否则最高压到 89。
 
 ## 置信度
 

@@ -62,11 +62,11 @@ impl ProfileConfig {
     fn from_profile(profile: ScoringProfile) -> Self {
         match profile {
             ScoringProfile::Pop => Self {
-                target_lufs: -14.0,
-                loudness_soft_range_low: -18.0,
-                loudness_soft_range_high: -12.0,
-                true_peak_warn: -1.0,
-                true_peak_critical: -0.2,
+                target_lufs: -9.0,
+                loudness_soft_range_low: -13.0,
+                loudness_soft_range_high: -6.0,
+                true_peak_warn: 0.1,
+                true_peak_critical: 1.0,
                 spectrum_fake_threshold: -85.0,
                 spectrum_processed_threshold: -80.0,
                 spectrum_good_threshold: -70.0,
@@ -420,12 +420,64 @@ impl QualityScorer {
         match status {
             QualityStatus::Suspicious => total_score = total_score.min(25.0),
             QualityStatus::Incomplete => total_score = total_score.min(45.0),
-            QualityStatus::Clipped => total_score = total_score.min(75.0),
-            QualityStatus::TruePeakRisk => total_score = total_score.min(85.0),
+            QualityStatus::Clipped => total_score = total_score.min(85.0),
+            QualityStatus::TruePeakRisk => total_score = total_score.min(92.0),
             _ => {}
         }
 
-        (total_score.clamp(0.0, 100.0).round() as i32).clamp(0, 100)
+        // Elite gate: 只有关键指标均达标时才允许进入 90+，避免高分段拥挤。
+        if total_score > 90.0 && !self.qualifies_for_elite_90(metrics, status) {
+            total_score = 89.0;
+        }
+
+        const HARD_MAX_SCORE: i32 = 99;
+        (total_score.clamp(0.0, HARD_MAX_SCORE as f64).round() as i32).clamp(0, HARD_MAX_SCORE)
+    }
+
+    fn qualifies_for_elite_90(&self, metrics: &FileMetrics, status: &QualityStatus) -> bool {
+        if *status != QualityStatus::Good {
+            return false;
+        }
+
+        let Some(i_lufs) = metrics.integrated_loudness_lufs else {
+            return false;
+        };
+        let Some(tp) = metrics.true_peak_dbtp else {
+            return false;
+        };
+        let Some(lra) = metrics.lra else {
+            return false;
+        };
+        let Some(rms18) = metrics.rms_db_above_18k else {
+            return false;
+        };
+
+        let loudness_ok = match self.profile {
+            ScoringProfile::Pop => (-10.5..=-7.5).contains(&i_lufs),
+            ScoringProfile::Broadcast => (-24.0..=-22.0).contains(&i_lufs),
+            ScoringProfile::Archive => (-20.0..=-12.0).contains(&i_lufs),
+        };
+
+        let true_peak_ok = match self.profile {
+            ScoringProfile::Pop => tp <= -0.2,
+            ScoringProfile::Broadcast => tp <= -1.0,
+            ScoringProfile::Archive => tp <= -0.3,
+        };
+
+        let lra_ok = match self.profile {
+            ScoringProfile::Pop => (4.5..=11.0).contains(&lra),
+            ScoringProfile::Broadcast => (6.0..=15.0).contains(&lra),
+            ScoringProfile::Archive => (4.0..=16.0).contains(&lra),
+        };
+
+        let spectrum_ok = rms18 >= self.config.spectrum_processed_threshold;
+        let bitrate_ok = if self.is_lossy(metrics) {
+            matches!(metrics.bitrate_kbps, Some(b) if b >= self.config.bitrate_high_kbps)
+        } else {
+            true
+        };
+
+        loudness_ok && true_peak_ok && lra_ok && spectrum_ok && bitrate_ok
     }
 
     fn calculate_compliance_score(&self, metrics: &FileMetrics) -> f64 {
@@ -671,7 +723,7 @@ mod tests {
             rms_db_above_16k: Some(-60.0),
             rms_db_above_18k: Some(-75.0),
             rms_db_above_20k: Some(-85.0),
-            integrated_loudness_lufs: Some(-14.2),
+            integrated_loudness_lufs: Some(-9.5),
             true_peak_dbtp: Some(-1.2),
             processing_time_ms: 1000,
             sample_rate_hz: Some(44_100),
@@ -717,7 +769,7 @@ mod tests {
     fn test_determine_status_loudness_off_target() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.integrated_loudness_lufs = Some(-8.0);
+        metrics.integrated_loudness_lufs = Some(-4.0);
         let status = scorer.determine_status(&metrics);
         assert_eq!(status, QualityStatus::LoudnessOffTarget);
     }
@@ -726,7 +778,7 @@ mod tests {
     fn test_determine_status_true_peak_risk() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.true_peak_dbtp = Some(-0.8);
+        metrics.true_peak_dbtp = Some(0.3);
         let status = scorer.determine_status(&metrics);
         assert_eq!(status, QualityStatus::TruePeakRisk);
     }
@@ -735,7 +787,7 @@ mod tests {
     fn test_determine_status_clipped() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.true_peak_dbtp = Some(-0.1);
+        metrics.true_peak_dbtp = Some(1.2);
         let status = scorer.determine_status(&metrics);
         assert_eq!(status, QualityStatus::Clipped);
     }
@@ -748,7 +800,7 @@ mod tests {
         metrics.codec_name = Some("mp3".to_string());
         metrics.container_format = Some("mp3".to_string());
         metrics.bitrate_kbps = Some(128);
-        metrics.integrated_loudness_lufs = Some(-14.0);
+        metrics.integrated_loudness_lufs = Some(-9.5);
         metrics.true_peak_dbtp = Some(-2.0);
         let status = scorer.determine_status(&metrics);
         assert_eq!(status, QualityStatus::LowBitrate);
@@ -770,7 +822,7 @@ mod tests {
         let metrics = create_test_metrics();
         let status = QualityStatus::Good;
         let score = scorer.calculate_quality_score(&metrics, &status);
-        assert!((70..=100).contains(&score));
+        assert!((70..=99).contains(&score));
     }
 
     #[test]
