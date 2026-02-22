@@ -7,7 +7,7 @@ Rust 音频质量分析器，基于 FFmpeg/FFprobe 执行指标提取、质量�
 - 递归扫描常见音频格式（wav/mp3/m4a/flac/aac/ogg/opus/wma/aiff/alac）
 - 并行提取指标：LRA、Peak、RMS、16k/18k/20k 高频能量
 - `ffprobe` 元数据：采样率、码率、声道、编码器、容器、时长
-- 质量状态分类：`质量良好`、`数据不完整`、`可疑(伪造)`、`疑似处理`、`已削波`、`严重压缩`、`低动态`、`低码率`、`低采样率`、`单声道`
+- 质量状态分类：`质量良好`、`数据不完整`、`可疑(伪造)`、`疑似处理`、`已削波`、`真峰值风险`、`响度偏离目标`、`严重压缩`、`低动态`、`低码率`、`低采样率`、`单声道`
 - 安全模式（默认开启）：
   - 原子写入输出文件
   - 拒绝写入到符号链接路径（防止链接覆盖）
@@ -43,6 +43,7 @@ AudioQuality-rs [PATH] [OPTIONS]
 - `--no-cache` 关闭增量缓存
 - `--jsonl` 额外生成 `audio_quality_report.jsonl`
 - `--sarif` 额外生成 `audio_quality_report.sarif.json`
+- `--profile <pop|broadcast|archive>` 评分档案（默认 `pop`，面向 A-pop/J-pop/K-pop）
 
 ## 输出文件
 
@@ -59,13 +60,13 @@ AudioQuality-rs [PATH] [OPTIONS]
 
 ## 评分说明（实现版）
 
-综合分数范围 `0-100`，由完整性/动态/频谱得分叠加并结合额外扣分：
+综合分数范围 `0-100`，由多维得分叠加并结合额外扣分：
 
-- 低码率（有损且 `<192 kbps`）：`-30`
-- 高码率但高频异常（有损且 `>256 kbps` 且 18kHz 能量低）：`-25`
-- 低采样率（`<44100 Hz`）：`-20`
-- 单声道（`channels < 2`）：`-5`
-- 伪造可疑（lossless 且 18kHz 能量极低）与数据缺失会触发状态上限惩罚
+- `Compliance`：基于 `Integrated LUFS` + `True Peak dBTP`
+- `Dynamics`：基于 `LRA`
+- `Spectrum/Authenticity`：基于高频段 RMS 与容器/编码推断
+- `Integrity`：基于关键字段完整性与错误码
+- 默认 `pop` 档案以流媒体音乐为目标（A-pop/J-pop/K-pop），可切换 `broadcast/archive`
 
 ## 开发与测试
 

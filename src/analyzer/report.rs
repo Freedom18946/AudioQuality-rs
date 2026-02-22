@@ -185,6 +185,10 @@ struct CsvRecord {
     quality_score: i32,
     #[serde(rename = "状态")]
     status: String,
+    #[serde(rename = "评分档案")]
+    profile: String,
+    #[serde(rename = "置信度")]
+    confidence: f64,
     #[serde(rename = "文件路径")]
     file_path: String,
     #[serde(rename = "备注")]
@@ -201,6 +205,10 @@ struct CsvRecord {
     rms_db_above_18k: Option<f64>,
     #[serde(rename = "20kHz以上RMS(dB)")]
     rms_db_above_20k: Option<f64>,
+    #[serde(rename = "综合响度(LUFS)")]
+    integrated_loudness_lufs: Option<f64>,
+    #[serde(rename = "真峰值(dBTP)")]
+    true_peak_dbtp: Option<f64>,
     #[serde(rename = "采样率(Hz)")]
     sample_rate_hz: Option<u32>,
     #[serde(rename = "码率(kbps)")]
@@ -228,6 +236,8 @@ impl CsvRecord {
         Self {
             quality_score: analysis.quality_score,
             status: analysis.status.to_string(),
+            profile: analysis.profile.clone(),
+            confidence: analysis.confidence,
             file_path: analysis.file_path.clone(),
             notes: analysis.notes.clone(),
             lra: analysis.metrics.lra,
@@ -236,6 +246,8 @@ impl CsvRecord {
             rms_db_above_16k: analysis.metrics.rms_db_above_16k,
             rms_db_above_18k: analysis.metrics.rms_db_above_18k,
             rms_db_above_20k: analysis.metrics.rms_db_above_20k,
+            integrated_loudness_lufs: analysis.metrics.integrated_loudness_lufs,
+            true_peak_dbtp: analysis.metrics.true_peak_dbtp,
             sample_rate_hz: analysis.metrics.sample_rate_hz,
             bitrate_kbps: analysis.metrics.bitrate_kbps,
             channels: analysis.metrics.channels,
@@ -287,6 +299,8 @@ mod tests {
             rms_db_above_16k: Some(-60.0),
             rms_db_above_18k: Some(-75.0),
             rms_db_above_20k: Some(-85.0),
+            integrated_loudness_lufs: Some(-14.2),
+            true_peak_dbtp: Some(-1.2),
             processing_time_ms: 1000,
             sample_rate_hz: Some(44_100),
             bitrate_kbps: Some(320),
@@ -304,6 +318,8 @@ mod tests {
             quality_score: 85,
             status: QualityStatus::Good,
             notes: "未发现明显的硬性技术问题。".to_string(),
+            profile: "pop".to_string(),
+            confidence: 1.0,
             metrics,
         }
     }

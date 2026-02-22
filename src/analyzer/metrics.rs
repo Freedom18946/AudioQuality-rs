@@ -78,6 +78,14 @@ pub struct FileMetrics {
     #[serde(rename = "rmsDbAbove20k")]
     pub rms_db_above_20k: Option<f64>,
 
+    /// 综合响度，单位 LUFS（ITU-R BS.1770 / EBU R128）。
+    #[serde(rename = "integratedLoudnessLufs")]
+    pub integrated_loudness_lufs: Option<f64>,
+
+    /// 真峰值，单位 dBTP/dBFS（由 ebur128 true-peak 输出）。
+    #[serde(rename = "truePeakDbtp")]
+    pub true_peak_dbtp: Option<f64>,
+
     /// 处理单个文件所花费的时间，单位是毫秒 (ms)。
     /// 用于性能评估。
     #[serde(rename = "processingTimeMs")]

@@ -7,7 +7,7 @@
 `src/analyzer/metrics.rs` 中的核心结果结构，包含：
 
 - 基础字段：`filePath`、`fileSizeBytes`、`processingTimeMs`
-- ffmpeg 指标：`lra`、`peakAmplitudeDb`、`overallRmsDb`、`rmsDbAbove16k/18k/20k`
+- ffmpeg 指标：`lra`、`integratedLoudnessLufs`、`truePeakDbtp`、`peakAmplitudeDb`、`overallRmsDb`、`rmsDbAbove16k/18k/20k`
 - ffprobe 指标：`sampleRateHz`、`bitrateKbps`、`channels`、`codecName`、`containerFormat`、`durationSeconds`
 - 缓存/审计字段：`cacheHit`、`contentSha256`、`errorCodes`
 
@@ -20,6 +20,8 @@
 - `Suspicious`（可疑/伪造）
 - `Processed`（疑似处理）
 - `Clipped`（已削波）
+- `TruePeakRisk`（真峰值风险）
+- `LoudnessOffTarget`（响度偏离目标）
 - `SeverelyCompressed`（严重压缩）
 - `LowDynamic`（低动态）
 - `LowBitrate`（低码率）
@@ -34,6 +36,8 @@
 - `质量分`
 - `状态`
 - `备注`
+- `profile`
+- `confidence`
 - `FileMetrics` 展平字段
 
 ## FFmpeg/FFprobe 处理 API

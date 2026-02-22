@@ -6,7 +6,7 @@ use crate::analyzer::{
     metrics::FileMetrics,
     report::ReportGenerator,
     safe_io,
-    scoring::QualityScorer,
+    scoring::{QualityScorer, ScoringProfile},
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::Local;
@@ -16,6 +16,7 @@ use rayon::prelude::*;
 use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 use walkdir::WalkDir;
 use which::which;
@@ -59,6 +60,13 @@ struct Cli {
 
     #[arg(long, help = "额外生成 SARIF 报告")]
     sarif: bool,
+
+    #[arg(
+        long,
+        default_value = "pop",
+        help = "评分档案: pop(默认, 适合A-pop/J-pop/K-pop), broadcast, archive"
+    )]
+    profile: String,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +77,7 @@ struct AppConfig {
     cache_enabled: bool,
     emit_jsonl: bool,
     emit_sarif: bool,
+    scoring_profile: ScoringProfile,
 }
 
 #[derive(Debug)]
@@ -214,7 +223,7 @@ fn run_analysis(base_folder_path: &Path, config: &AppConfig) -> Result<()> {
     println!("\n--- 开始执行分析流程 ---");
     println!("分析开始时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
     println!(
-        "安全模式: {} | 缓存: {} | 命令超时: {}s | 最大并发进程: {}",
+        "安全模式: {} | 缓存: {} | 命令超时: {}s | 最大并发进程: {} | 评分档案: {}",
         if config.safe_mode { "开启" } else { "关闭" },
         if config.cache_enabled {
             "开启"
@@ -222,7 +231,8 @@ fn run_analysis(base_folder_path: &Path, config: &AppConfig) -> Result<()> {
             "关闭"
         },
         config.command_timeout.as_secs(),
-        config.max_ffmpeg_processes
+        config.max_ffmpeg_processes,
+        config.scoring_profile.as_str()
     );
 
     let ffmpeg_path = find_ffmpeg_path()?;
@@ -329,7 +339,7 @@ fn run_analysis(base_folder_path: &Path, config: &AppConfig) -> Result<()> {
     }
 
     println!("正在进行质量评分分析...");
-    let scorer = QualityScorer::new();
+    let scorer = QualityScorer::with_profile(config.scoring_profile);
     let quality_analyses = scorer.analyze_files(&results);
 
     let report_generator = ReportGenerator::new(config.safe_mode);
@@ -391,24 +401,27 @@ fn process_one_file(
     })
 }
 
-fn build_app_config(cli: &Cli) -> AppConfig {
+fn build_app_config(cli: &Cli) -> Result<AppConfig> {
     let default_parallel = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
+    let scoring_profile =
+        ScoringProfile::from_str(&cli.profile).map_err(|e| anyhow!("profile 参数错误: {e}"))?;
 
-    AppConfig {
+    Ok(AppConfig {
         command_timeout: Duration::from_secs(cli.ffmpeg_timeout_seconds.max(1)),
         max_ffmpeg_processes: cli.max_ffmpeg_processes.unwrap_or(default_parallel).max(1),
         safe_mode: !cli.unsafe_mode,
         cache_enabled: !cli.no_cache,
         emit_jsonl: cli.jsonl,
         emit_sarif: cli.sarif,
-    }
+        scoring_profile,
+    })
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = build_app_config(&cli);
+    let config = build_app_config(&cli)?;
 
     println!("欢迎使用音频质量分析器 (Rust 版)");
 
@@ -442,9 +455,10 @@ mod tests {
     #[test]
     fn test_build_app_config_defaults() {
         let cli = Cli::parse_from(["AudioQuality-rs"]);
-        let config = build_app_config(&cli);
+        let config = build_app_config(&cli).expect("build config");
         assert!(config.safe_mode);
         assert!(config.cache_enabled);
         assert!(config.command_timeout.as_secs() >= 1);
+        assert_eq!(config.scoring_profile, ScoringProfile::Pop);
     }
 }

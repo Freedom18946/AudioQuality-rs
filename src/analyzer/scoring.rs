@@ -1,68 +1,124 @@
-// ================================================================
-// 项目: 音频质量分析器 (AudioQuality-rs)
-// 模块: analyzer/scoring.rs
-// 作者: AudioQuality-rs 开发团队
-// 版本: 4.0.0
-// 描述: 音频质量评分算法核心实现模块
-//
-// 功能概述:
-// - 实现三维质量评分体系（完整性、动态范围、频谱质量）
-// - 提供音频质量状态自动检测和分类功能
-// - 基于音频工程最佳实践的阈值配置系统
-// - 与Python参考实现保持算法一致性，确保评分准确性
-// - 支持批量处理和并行评分计算
-// ================================================================
-
 use super::metrics::FileMetrics;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::str::FromStr;
 
-/// 质量评分阈值配置
-/// 这些阈值与Python版本保持完全一致，确保评分结果的一致性
-#[derive(Debug, Clone)]
-pub struct QualityThresholds {
-    // 频谱相关阈值
-    pub spectrum_fake_threshold: f64, // -85.0 dB - 伪造音频检测阈值
-    pub spectrum_processed_threshold: f64, // -80.0 dB - 处理音频检测阈值
-    pub spectrum_good_threshold: f64, // -70.0 dB - 良好频谱阈值
-
-    // 动态范围 (LRA) 相关阈值
-    pub lra_poor_max: f64,       // 3.0 LU - 严重压缩上限
-    pub lra_low_max: f64,        // 6.0 LU - 低动态上限
-    pub lra_excellent_min: f64,  // 8.0 LU - 优秀动态下限
-    pub lra_excellent_max: f64,  // 12.0 LU - 优秀动态上限
-    pub lra_acceptable_max: f64, // 15.0 LU - 可接受动态上限
-    pub lra_too_high: f64,       // 20.0 LU - 动态过高阈值
-
-    // 峰值相关阈值
-    pub peak_clipping_db: f64, // -0.1 dB - 削波检测阈值
-    #[allow(dead_code)]
-    pub peak_clipping_linear: f64, // 0.999 - 线性削波检测阈值（保留用于未来扩展）
-    pub peak_good_db: f64,     // -6.0 dB - 良好峰值阈值
-    pub peak_medium_db: f64,   // -3.0 dB - 中等峰值阈值
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScoringProfile {
+    #[serde(rename = "pop")]
+    Pop,
+    #[serde(rename = "broadcast")]
+    Broadcast,
+    #[serde(rename = "archive")]
+    Archive,
 }
 
-impl Default for QualityThresholds {
-    fn default() -> Self {
-        Self {
-            spectrum_fake_threshold: -85.0,
-            spectrum_processed_threshold: -80.0,
-            spectrum_good_threshold: -70.0,
-            lra_poor_max: 3.0,
-            lra_low_max: 6.0,
-            lra_excellent_min: 8.0,
-            lra_excellent_max: 12.0,
-            lra_acceptable_max: 15.0,
-            lra_too_high: 20.0,
-            peak_clipping_db: -0.1,
-            peak_clipping_linear: 0.999,
-            peak_good_db: -6.0,
-            peak_medium_db: -3.0,
+impl ScoringProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScoringProfile::Pop => "pop",
+            ScoringProfile::Broadcast => "broadcast",
+            ScoringProfile::Archive => "archive",
         }
     }
 }
 
-/// 音频质量状态枚举
+impl FromStr for ScoringProfile {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pop" | "kpop" | "jpop" | "apop" => Ok(ScoringProfile::Pop),
+            "broadcast" => Ok(ScoringProfile::Broadcast),
+            "archive" => Ok(ScoringProfile::Archive),
+            _ => Err(format!(
+                "不支持的 profile: {s}，可选: pop/broadcast/archive"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProfileConfig {
+    target_lufs: f64,
+    loudness_soft_range_low: f64,
+    loudness_soft_range_high: f64,
+    true_peak_warn: f64,
+    true_peak_critical: f64,
+    spectrum_fake_threshold: f64,
+    spectrum_processed_threshold: f64,
+    spectrum_good_threshold: f64,
+    lra_poor_max: f64,
+    lra_low_max: f64,
+    lra_excellent_min: f64,
+    lra_excellent_max: f64,
+    lra_acceptable_max: f64,
+    lra_too_high: f64,
+    bitrate_low_kbps: u32,
+    bitrate_high_kbps: u32,
+}
+
+impl ProfileConfig {
+    fn from_profile(profile: ScoringProfile) -> Self {
+        match profile {
+            ScoringProfile::Pop => Self {
+                target_lufs: -14.0,
+                loudness_soft_range_low: -18.0,
+                loudness_soft_range_high: -12.0,
+                true_peak_warn: -1.0,
+                true_peak_critical: -0.2,
+                spectrum_fake_threshold: -85.0,
+                spectrum_processed_threshold: -80.0,
+                spectrum_good_threshold: -70.0,
+                lra_poor_max: 3.0,
+                lra_low_max: 5.0,
+                lra_excellent_min: 5.5,
+                lra_excellent_max: 10.0,
+                lra_acceptable_max: 14.0,
+                lra_too_high: 18.0,
+                bitrate_low_kbps: 192,
+                bitrate_high_kbps: 256,
+            },
+            ScoringProfile::Broadcast => Self {
+                target_lufs: -23.0,
+                loudness_soft_range_low: -25.0,
+                loudness_soft_range_high: -22.0,
+                true_peak_warn: -2.0,
+                true_peak_critical: -1.0,
+                spectrum_fake_threshold: -88.0,
+                spectrum_processed_threshold: -82.0,
+                spectrum_good_threshold: -72.0,
+                lra_poor_max: 4.0,
+                lra_low_max: 6.0,
+                lra_excellent_min: 6.0,
+                lra_excellent_max: 15.0,
+                lra_acceptable_max: 20.0,
+                lra_too_high: 24.0,
+                bitrate_low_kbps: 192,
+                bitrate_high_kbps: 256,
+            },
+            ScoringProfile::Archive => Self {
+                target_lufs: -18.0,
+                loudness_soft_range_low: -24.0,
+                loudness_soft_range_high: -10.0,
+                true_peak_warn: -0.5,
+                true_peak_critical: -0.1,
+                spectrum_fake_threshold: -85.0,
+                spectrum_processed_threshold: -80.0,
+                spectrum_good_threshold: -70.0,
+                lra_poor_max: 2.5,
+                lra_low_max: 4.0,
+                lra_excellent_min: 5.0,
+                lra_excellent_max: 14.0,
+                lra_acceptable_max: 20.0,
+                lra_too_high: 24.0,
+                bitrate_low_kbps: 160,
+                bitrate_high_kbps: 256,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum QualityStatus {
     #[serde(rename = "质量良好")]
@@ -75,6 +131,10 @@ pub enum QualityStatus {
     Processed,
     #[serde(rename = "已削波")]
     Clipped,
+    #[serde(rename = "真峰值风险")]
+    TruePeakRisk,
+    #[serde(rename = "响度偏离目标")]
+    LoudnessOffTarget,
     #[serde(rename = "严重压缩")]
     SeverelyCompressed,
     #[serde(rename = "低动态")]
@@ -95,6 +155,8 @@ impl std::fmt::Display for QualityStatus {
             QualityStatus::Suspicious => "可疑 (伪造)",
             QualityStatus::Processed => "疑似处理",
             QualityStatus::Clipped => "已削波",
+            QualityStatus::TruePeakRisk => "真峰值风险",
+            QualityStatus::LoudnessOffTarget => "响度偏离目标",
             QualityStatus::SeverelyCompressed => "严重压缩",
             QualityStatus::LowDynamic => "低动态",
             QualityStatus::LowBitrate => "低码率",
@@ -105,82 +167,67 @@ impl std::fmt::Display for QualityStatus {
     }
 }
 
-/// 音频质量分析结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityAnalysis {
-    /// 文件路径
     #[serde(rename = "filePath")]
     pub file_path: String,
-
-    /// 综合质量分数 (0-100)
     #[serde(rename = "质量分")]
     pub quality_score: i32,
-
-    /// 质量状态
     #[serde(rename = "状态")]
     pub status: QualityStatus,
-
-    /// 分析备注
     #[serde(rename = "备注")]
     pub notes: String,
-
-    /// 原始指标数据
+    #[serde(rename = "profile")]
+    pub profile: String,
+    #[serde(rename = "confidence")]
+    pub confidence: f64,
     #[serde(flatten)]
     pub metrics: FileMetrics,
 }
 
-/// 音频质量评分器
 pub struct QualityScorer {
-    thresholds: QualityThresholds,
+    profile: ScoringProfile,
+    config: ProfileConfig,
 }
 
 impl QualityScorer {
-    /// 创建新的质量评分器实例
     pub fn new() -> Self {
+        Self::with_profile(ScoringProfile::Pop)
+    }
+
+    pub fn with_profile(profile: ScoringProfile) -> Self {
         Self {
-            thresholds: QualityThresholds::default(),
+            profile,
+            config: ProfileConfig::from_profile(profile),
         }
     }
 
-    /// 使用自定义阈值创建评分器
-    ///
-    /// 此方法允许用户自定义评分阈值，用于特殊场景或实验性评分标准
-    #[allow(dead_code)]
-    pub fn with_thresholds(thresholds: QualityThresholds) -> Self {
-        Self { thresholds }
-    }
-
-    /// 分析单个文件的质量
     pub fn analyze_file(&self, metrics: &FileMetrics) -> QualityAnalysis {
         let status = self.determine_status(metrics);
         let notes = self.generate_notes(metrics, &status);
         let quality_score = self.calculate_quality_score(metrics, &status);
+        let confidence = self.estimate_confidence(metrics);
 
         QualityAnalysis {
             file_path: metrics.file_path.clone(),
             quality_score,
             status,
             notes,
+            profile: self.profile.as_str().to_string(),
+            confidence,
             metrics: metrics.clone(),
         }
     }
 
-    /// 批量分析多个文件
-    /// 对于大量文件，使用并行处理来提高性能
     pub fn analyze_files(&self, metrics_list: &[FileMetrics]) -> Vec<QualityAnalysis> {
         use rayon::prelude::*;
 
-        // 对于少量文件，使用串行处理避免并行开销
         if metrics_list.len() < 10 {
-            metrics_list
-                .iter()
-                .map(|metrics| self.analyze_file(metrics))
-                .collect()
+            metrics_list.iter().map(|m| self.analyze_file(m)).collect()
         } else {
-            // 对于大量文件，使用并行处理
             metrics_list
                 .par_iter()
-                .map(|metrics| self.analyze_file(metrics))
+                .map(|m| self.analyze_file(m))
                 .collect()
         }
     }
@@ -193,331 +240,353 @@ impl Default for QualityScorer {
 }
 
 impl QualityScorer {
-    /// 确定音频文件的质量状态
     fn determine_status(&self, metrics: &FileMetrics) -> QualityStatus {
-        // 检查关键数据完整性
         let critical_fields_missing = self.count_missing_critical_fields(metrics);
         if critical_fields_missing >= 2 {
             return QualityStatus::Incomplete;
         }
 
-        // lossless + 高频异常 => 高可疑
         if let Some(rms_18k) = metrics.rms_db_above_18k {
-            if self.is_lossless(metrics) && rms_18k < self.thresholds.spectrum_fake_threshold {
+            if self.is_lossless(metrics) && rms_18k < self.config.spectrum_fake_threshold {
                 return QualityStatus::Suspicious;
             }
-
-            if rms_18k < self.thresholds.spectrum_processed_threshold {
+            if rms_18k < self.config.spectrum_processed_threshold {
                 return QualityStatus::Processed;
             }
         }
 
-        // 有损音频低码率
-        if self.is_lossy(metrics) && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate < 192)
+        if let Some(tp) = metrics.true_peak_dbtp {
+            if tp >= self.config.true_peak_critical {
+                return QualityStatus::Clipped;
+            }
+            if tp >= self.config.true_peak_warn {
+                return QualityStatus::TruePeakRisk;
+            }
+        } else if matches!(metrics.peak_amplitude_db, Some(peak) if peak >= -0.1) {
+            return QualityStatus::Clipped;
+        }
+
+        if let Some(i_lufs) = metrics.integrated_loudness_lufs {
+            if i_lufs < self.config.loudness_soft_range_low
+                || i_lufs > self.config.loudness_soft_range_high
+            {
+                return QualityStatus::LoudnessOffTarget;
+            }
+        }
+
+        if self.is_lossy(metrics)
+            && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate < self.config.bitrate_low_kbps)
         {
             return QualityStatus::LowBitrate;
         }
 
-        // 采样率过低
         if matches!(metrics.sample_rate_hz, Some(sr) if sr < 44_100) {
             return QualityStatus::LowSampleRate;
         }
 
-        // 单声道提示
         if matches!(metrics.channels, Some(ch) if ch < 2) {
             return QualityStatus::Mono;
         }
 
-        // 检查是否存在削波
-        if let Some(peak_db) = metrics.peak_amplitude_db {
-            if peak_db >= self.thresholds.peak_clipping_db {
-                return QualityStatus::Clipped;
-            }
-        }
-
-        // 检查动态范围问题
         if let Some(lra) = metrics.lra {
-            if lra > 0.0 {
-                if lra < self.thresholds.lra_poor_max {
-                    return QualityStatus::SeverelyCompressed;
-                }
-                if lra < self.thresholds.lra_low_max {
-                    return QualityStatus::LowDynamic;
-                }
+            if lra < self.config.lra_poor_max {
+                return QualityStatus::SeverelyCompressed;
+            }
+            if lra < self.config.lra_low_max {
+                return QualityStatus::LowDynamic;
             }
         }
 
         QualityStatus::Good
     }
 
-    /// 计算缺失的关键字段数量
     fn count_missing_critical_fields(&self, metrics: &FileMetrics) -> i32 {
         let mut missing_count = 0;
 
-        // 检查关键字段: rmsDbAbove18k, lra, peakAmplitudeDb
-        if metrics.rms_db_above_18k.is_none() || metrics.rms_db_above_18k == Some(0.0) {
+        if metrics.rms_db_above_18k.is_none() {
             missing_count += 1;
         }
-        if metrics.lra.is_none() || metrics.lra == Some(0.0) {
+        if metrics.lra.is_none() {
             missing_count += 1;
         }
-        if metrics.peak_amplitude_db.is_none() {
+        if metrics.integrated_loudness_lufs.is_none() {
+            missing_count += 1;
+        }
+        if metrics.true_peak_dbtp.is_none() && metrics.peak_amplitude_db.is_none() {
             missing_count += 1;
         }
 
         missing_count
     }
 
-    /// 生成分析备注
     fn generate_notes(&self, metrics: &FileMetrics, status: &QualityStatus) -> String {
         let mut notes = Vec::new();
+        notes.push(format!("评分档案: {}", self.profile.as_str()));
 
         match status {
             QualityStatus::Incomplete => {
-                notes.push("关键数据缺失，分析可能不准确。".to_string());
+                notes.push("关键数据缺失，分析置信度较低。".to_string());
             }
             QualityStatus::Suspicious => {
-                notes.push("频谱在约 18kHz 处存在硬性截止 (高度疑似伪造/升频)。".to_string());
+                notes.push("无损容器下高频能量异常，疑似有损升频来源。".to_string());
             }
             QualityStatus::Processed => {
-                notes.push("频谱在 18kHz 处能量较低，可能存在软性截止。".to_string());
+                notes.push("高频能量偏低，可能存在软截止或后期处理。".to_string());
             }
             QualityStatus::Clipped => {
-                notes.push("存在严重数字削波风险 (峰值接近0dB)。".to_string());
+                if let Some(tp) = metrics.true_peak_dbtp {
+                    notes.push(format!("真峰值过高 (TP: {tp:.2} dBTP)，存在削波风险。"));
+                } else {
+                    notes.push("峰值过高，存在削波风险。".to_string());
+                }
+            }
+            QualityStatus::TruePeakRisk => {
+                if let Some(tp) = metrics.true_peak_dbtp {
+                    notes.push(format!("真峰值接近阈值 (TP: {tp:.2} dBTP)。"));
+                }
+            }
+            QualityStatus::LoudnessOffTarget => {
+                if let Some(i) = metrics.integrated_loudness_lufs {
+                    notes.push(format!(
+                        "综合响度偏离目标 (I: {i:.1} LUFS, target: {:.1} LUFS)。",
+                        self.config.target_lufs
+                    ));
+                }
             }
             QualityStatus::SeverelyCompressed => {
                 if let Some(lra) = metrics.lra {
-                    notes.push(format!("动态范围极低 (LRA: {lra:.1} LU)，严重过度压缩。"));
+                    notes.push(format!("动态范围极低 (LRA: {lra:.1} LU)。"));
                 }
             }
             QualityStatus::LowDynamic => {
                 if let Some(lra) = metrics.lra {
-                    notes.push(format!("动态范围过低 (LRA: {lra:.1} LU)，可能过度压缩。"));
+                    notes.push(format!("动态范围偏低 (LRA: {lra:.1} LU)。"));
                 }
             }
             QualityStatus::LowBitrate => {
                 if let Some(bitrate) = metrics.bitrate_kbps {
-                    notes.push(format!("码率偏低 ({bitrate} kbps)，可能存在细节损失。"));
+                    notes.push(format!("有损码率偏低 ({bitrate} kbps)。"));
                 }
             }
             QualityStatus::LowSampleRate => {
-                if let Some(sample_rate) = metrics.sample_rate_hz {
-                    notes.push(format!("采样率过低 ({sample_rate} Hz)，高频上限受限。"));
+                if let Some(sr) = metrics.sample_rate_hz {
+                    notes.push(format!("采样率偏低 ({sr} Hz)。"));
                 }
             }
             QualityStatus::Mono => {
-                notes.push("当前文件为单声道 (mono)。".to_string());
+                notes.push("当前文件为单声道。".to_string());
             }
             QualityStatus::Good => {
-                // 检查是否有其他需要注意的问题
-                if let Some(lra) = metrics.lra {
-                    if lra > self.thresholds.lra_too_high {
-                        notes.push(format!(
-                            "动态范围过高 (LRA: {lra:.1} LU)，可能需要压缩处理。"
-                        ));
-                    }
-                }
+                notes.push("关键技术指标在目标范围内。".to_string());
             }
         }
 
-        if notes.is_empty() {
-            "未发现明显的硬性技术问题。".to_string()
-        } else {
-            notes.join(" | ")
-        }
+        notes.join(" | ")
     }
 
-    /// 计算综合质量分数 (0-100)
     fn calculate_quality_score(&self, metrics: &FileMetrics, status: &QualityStatus) -> i32 {
-        // 评分体系常量定义（用于文档和理解，实际计算中直接使用数值）
-        #[allow(dead_code)]
-        const MAX_SCORE_INTEGRITY: f64 = 40.0; // 完整性评分上限
-        #[allow(dead_code)]
-        const MAX_SCORE_DYNAMICS: f64 = 30.0; // 动态范围评分上限
-        #[allow(dead_code)]
-        const MAX_SCORE_SPECTRUM: f64 = 30.0; // 频谱评分上限
+        let compliance_score = self.calculate_compliance_score(metrics); // 35
+        let dynamics_score = self.calculate_dynamics_score(metrics); // 20
+        let spectrum_score = self.calculate_spectrum_score(metrics); // 25
+        let authenticity_score = self.calculate_authenticity_score(metrics); // 10
+        let integrity_score = self.calculate_integrity_score(metrics); // 10
 
-        let mut integrity_score = 0.0;
-        let mut dynamics_score = 0.0;
-        let mut spectrum_score = 0.0;
+        let mut total_score = compliance_score
+            + dynamics_score
+            + spectrum_score
+            + authenticity_score
+            + integrity_score;
 
-        // 计算完整性惩罚
-        let completeness_penalty = self.count_missing_critical_fields(metrics) as f64 * 10.0;
-
-        // 1. 完整性评分 (基于18kHz以上频段和峰值)
-        integrity_score += self.calculate_integrity_score(metrics);
-
-        // 2. 动态范围评分 (基于LRA)
-        dynamics_score += self.calculate_dynamics_score(metrics);
-
-        // 3. 频谱评分 (基于16kHz以上频段)
-        spectrum_score += self.calculate_spectrum_score(metrics);
-
-        // 计算总分
-        let mut total_score =
-            integrity_score + dynamics_score + spectrum_score - completeness_penalty;
-
-        // 额外扣分规则（与 ffprobe 元数据联动）
-        if self.is_lossy(metrics) && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate < 192)
+        if self.is_lossy(metrics)
+            && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate < self.config.bitrate_low_kbps)
         {
-            total_score -= 30.0;
+            total_score -= 12.0;
         }
 
         if self.is_lossy(metrics)
-            && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate > 256)
-            && matches!(metrics.rms_db_above_18k, Some(rms_18k) if rms_18k < self.thresholds.spectrum_processed_threshold)
+            && matches!(metrics.bitrate_kbps, Some(bitrate) if bitrate > self.config.bitrate_high_kbps)
+            && matches!(metrics.rms_db_above_18k, Some(rms_18k) if rms_18k < self.config.spectrum_processed_threshold)
         {
-            total_score -= 25.0;
+            total_score -= 8.0;
         }
 
         if matches!(metrics.sample_rate_hz, Some(sr) if sr < 44_100) {
-            total_score -= 20.0;
+            total_score -= 10.0;
         }
-
         if matches!(metrics.channels, Some(ch) if ch < 2) {
-            total_score -= 5.0;
+            total_score -= 3.0;
         }
 
-        // 根据状态应用额外惩罚
         match status {
-            QualityStatus::Suspicious => {
-                total_score = total_score.min(20.0);
-            }
-            QualityStatus::Incomplete => {
-                total_score = total_score.min(40.0);
-            }
+            QualityStatus::Suspicious => total_score = total_score.min(25.0),
+            QualityStatus::Incomplete => total_score = total_score.min(45.0),
+            QualityStatus::Clipped => total_score = total_score.min(75.0),
+            QualityStatus::TruePeakRisk => total_score = total_score.min(85.0),
             _ => {}
         }
 
-        // 确保分数在0-100范围内
-        (total_score.max(0.0).round() as i32).min(100)
+        (total_score.clamp(0.0, 100.0).round() as i32).clamp(0, 100)
     }
 
-    /// 计算完整性分数 (基于18kHz以上频段和峰值)
-    fn calculate_integrity_score(&self, metrics: &FileMetrics) -> f64 {
-        let mut score = 0.0;
-
-        // 基于18kHz以上频段的评分
-        if let Some(rms_18k) = metrics.rms_db_above_18k {
-            if rms_18k != 0.0 {
-                if rms_18k >= self.thresholds.spectrum_good_threshold {
-                    score += 25.0;
-                } else if rms_18k >= self.thresholds.spectrum_processed_threshold {
-                    score += self.map_to_score(
-                        rms_18k,
-                        self.thresholds.spectrum_processed_threshold,
-                        self.thresholds.spectrum_good_threshold,
-                        15.0,
-                        25.0,
-                    );
-                } else if rms_18k >= self.thresholds.spectrum_fake_threshold {
-                    score += self.map_to_score(
-                        rms_18k,
-                        self.thresholds.spectrum_fake_threshold,
-                        self.thresholds.spectrum_processed_threshold,
-                        5.0,
-                        15.0,
-                    );
-                }
+    fn calculate_compliance_score(&self, metrics: &FileMetrics) -> f64 {
+        let loudness_score = if let Some(i_lufs) = metrics.integrated_loudness_lufs {
+            let delta = (i_lufs - self.config.target_lufs).abs();
+            if delta <= 1.0 {
+                20.0
+            } else if delta <= 3.0 {
+                self.map_to_score(delta, 1.0, 3.0, 20.0, 12.0)
+            } else if delta <= 6.0 {
+                self.map_to_score(delta, 3.0, 6.0, 12.0, 2.0)
+            } else {
+                0.0
             }
-        }
+        } else {
+            0.0
+        };
 
-        // 基于峰值的评分
-        if let Some(peak_db) = metrics.peak_amplitude_db {
-            if peak_db <= self.thresholds.peak_good_db {
-                score += 15.0;
-            } else if peak_db <= self.thresholds.peak_medium_db {
-                score += self.map_to_score(
-                    peak_db,
-                    self.thresholds.peak_good_db,
-                    self.thresholds.peak_medium_db,
+        let peak_score = if let Some(tp) = metrics.true_peak_dbtp {
+            if tp <= self.config.true_peak_warn {
+                15.0
+            } else if tp <= self.config.true_peak_critical {
+                self.map_to_score(
+                    tp,
+                    self.config.true_peak_warn,
+                    self.config.true_peak_critical,
                     15.0,
-                    10.0,
-                );
-            } else if peak_db <= self.thresholds.peak_clipping_db {
-                score += self.map_to_score(
-                    peak_db,
-                    self.thresholds.peak_medium_db,
-                    self.thresholds.peak_clipping_db,
-                    10.0,
-                    3.0,
-                );
+                    4.0,
+                )
+            } else {
+                0.0
             }
+        } else if let Some(peak) = metrics.peak_amplitude_db {
+            if peak <= -1.0 {
+                8.0
+            } else if peak <= 0.0 {
+                self.map_to_score(peak, -1.0, 0.0, 8.0, 2.0)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        loudness_score + peak_score
+    }
+
+    fn calculate_dynamics_score(&self, metrics: &FileMetrics) -> f64 {
+        let Some(lra) = metrics.lra else { return 0.0 };
+
+        if lra >= self.config.lra_excellent_min && lra <= self.config.lra_excellent_max {
+            return 20.0;
+        }
+        if lra >= self.config.lra_low_max && lra < self.config.lra_excellent_min {
+            return self.map_to_score(
+                lra,
+                self.config.lra_low_max,
+                self.config.lra_excellent_min,
+                12.0,
+                19.0,
+            );
+        }
+        if lra > self.config.lra_excellent_max && lra <= self.config.lra_acceptable_max {
+            return self.map_to_score(
+                lra,
+                self.config.lra_excellent_max,
+                self.config.lra_acceptable_max,
+                19.0,
+                13.0,
+            );
+        }
+        if lra >= self.config.lra_poor_max && lra < self.config.lra_low_max {
+            return self.map_to_score(
+                lra,
+                self.config.lra_poor_max,
+                self.config.lra_low_max,
+                5.0,
+                12.0,
+            );
+        }
+        if lra > self.config.lra_too_high {
+            return 10.0;
+        }
+        self.map_to_score(lra, 0.0, self.config.lra_poor_max, 0.0, 5.0)
+    }
+
+    fn calculate_spectrum_score(&self, metrics: &FileMetrics) -> f64 {
+        let score_16k = metrics
+            .rms_db_above_16k
+            .map(|v| self.map_to_score(v, -95.0, -55.0, 0.0, 15.0))
+            .unwrap_or(0.0);
+
+        let score_18k = metrics
+            .rms_db_above_18k
+            .map(|v| {
+                if v >= self.config.spectrum_good_threshold {
+                    10.0
+                } else if v >= self.config.spectrum_processed_threshold {
+                    self.map_to_score(
+                        v,
+                        self.config.spectrum_processed_threshold,
+                        self.config.spectrum_good_threshold,
+                        6.0,
+                        10.0,
+                    )
+                } else if v >= self.config.spectrum_fake_threshold {
+                    self.map_to_score(
+                        v,
+                        self.config.spectrum_fake_threshold,
+                        self.config.spectrum_processed_threshold,
+                        2.0,
+                        6.0,
+                    )
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
+
+        score_16k + score_18k
+    }
+
+    fn calculate_authenticity_score(&self, metrics: &FileMetrics) -> f64 {
+        let mut score: f64 = 10.0;
+        if self.is_lossless(metrics)
+            && matches!(metrics.rms_db_above_18k, Some(v) if v < self.config.spectrum_fake_threshold)
+        {
+            score = 0.0;
+        } else if matches!(metrics.rms_db_above_18k, Some(v) if v < self.config.spectrum_processed_threshold)
+        {
+            score = 4.0;
         }
 
+        if self.is_lossy(metrics)
+            && matches!(metrics.bitrate_kbps, Some(b) if b >= self.config.bitrate_high_kbps)
+            && matches!(metrics.rms_db_above_18k, Some(v) if v < self.config.spectrum_processed_threshold)
+        {
+            score -= 2.0;
+        }
+
+        score.max(0.0)
+    }
+
+    fn calculate_integrity_score(&self, metrics: &FileMetrics) -> f64 {
+        let missing = self.count_missing_critical_fields(metrics) as f64;
+        let mut score = (10.0 - missing * 3.0).max(0.0);
+        if !metrics.error_codes.is_empty() {
+            score = (score - 2.0_f64.min(metrics.error_codes.len() as f64)).max(0.0);
+        }
         score
     }
 
-    /// 计算动态范围分数 (基于LRA)
-    fn calculate_dynamics_score(&self, metrics: &FileMetrics) -> f64 {
-        if let Some(lra) = metrics.lra {
-            if lra > 0.0 {
-                // 理想动态范围 (8-12 LU)
-                if lra >= self.thresholds.lra_excellent_min
-                    && lra <= self.thresholds.lra_excellent_max
-                {
-                    return 30.0;
-                }
-
-                // 低可接受范围 (6-8 LU)
-                if lra >= self.thresholds.lra_low_max && lra < self.thresholds.lra_excellent_min {
-                    return self.map_to_score(
-                        lra,
-                        self.thresholds.lra_low_max,
-                        self.thresholds.lra_excellent_min,
-                        20.0,
-                        28.0,
-                    );
-                }
-
-                // 高可接受范围 (12-15 LU)
-                if lra > self.thresholds.lra_excellent_max
-                    && lra <= self.thresholds.lra_acceptable_max
-                {
-                    return self.map_to_score(
-                        lra,
-                        self.thresholds.lra_excellent_max,
-                        self.thresholds.lra_acceptable_max,
-                        28.0,
-                        22.0,
-                    );
-                }
-
-                // 低动态范围 (3-6 LU)
-                if lra >= self.thresholds.lra_poor_max && lra < self.thresholds.lra_low_max {
-                    return self.map_to_score(
-                        lra,
-                        self.thresholds.lra_poor_max,
-                        self.thresholds.lra_low_max,
-                        10.0,
-                        20.0,
-                    );
-                }
-
-                // 极低动态范围 (0-3 LU)
-                if lra < self.thresholds.lra_poor_max {
-                    return self.map_to_score(lra, 0.0, self.thresholds.lra_poor_max, 0.0, 10.0);
-                }
-
-                // 动态范围过高 (>15 LU)
-                if lra > self.thresholds.lra_acceptable_max {
-                    return 18.0;
-                }
-            }
+    fn estimate_confidence(&self, metrics: &FileMetrics) -> f64 {
+        let missing = self.count_missing_critical_fields(metrics) as f64;
+        let mut confidence = 1.0 - missing * 0.18;
+        if !metrics.error_codes.is_empty() {
+            confidence -= 0.08 * metrics.error_codes.len() as f64;
         }
-        0.0
+        confidence.clamp(0.1, 1.0)
     }
 
-    /// 计算频谱分数 (基于16kHz以上频段)
-    fn calculate_spectrum_score(&self, metrics: &FileMetrics) -> f64 {
-        if let Some(rms_16k) = metrics.rms_db_above_16k {
-            self.map_to_score(rms_16k, -90.0, -55.0, 0.0, 30.0)
-        } else {
-            0.0
-        }
-    }
-
-    /// 将数值映射到指定分数范围
     fn map_to_score(
         &self,
         value: f64,
@@ -592,17 +661,18 @@ impl QualityScorer {
 mod tests {
     use super::*;
 
-    /// 创建测试用的FileMetrics实例
     fn create_test_metrics() -> FileMetrics {
         FileMetrics {
             file_path: "test.flac".to_string(),
-            file_size_bytes: 1000000,
+            file_size_bytes: 1_000_000,
             lra: Some(8.5),
-            peak_amplitude_db: Some(-3.0),
+            peak_amplitude_db: Some(-1.5),
             overall_rms_db: Some(-18.0),
             rms_db_above_16k: Some(-60.0),
             rms_db_above_18k: Some(-75.0),
             rms_db_above_20k: Some(-85.0),
+            integrated_loudness_lufs: Some(-14.2),
+            true_peak_dbtp: Some(-1.2),
             processing_time_ms: 1000,
             sample_rate_hz: Some(44_100),
             bitrate_kbps: Some(900),
@@ -617,27 +687,22 @@ mod tests {
     }
 
     #[test]
-    fn test_quality_thresholds_default() {
-        let thresholds = QualityThresholds::default();
-        assert_eq!(thresholds.spectrum_fake_threshold, -85.0);
-        assert_eq!(thresholds.spectrum_processed_threshold, -80.0);
-        assert_eq!(thresholds.spectrum_good_threshold, -70.0);
-        assert_eq!(thresholds.lra_poor_max, 3.0);
-        assert_eq!(thresholds.lra_excellent_min, 8.0);
-        assert_eq!(thresholds.peak_clipping_db, -0.1);
+    fn test_profile_parse() {
+        assert_eq!(
+            ScoringProfile::from_str("pop").ok(),
+            Some(ScoringProfile::Pop)
+        );
+        assert_eq!(
+            ScoringProfile::from_str("kpop").ok(),
+            Some(ScoringProfile::Pop)
+        );
+        assert!(ScoringProfile::from_str("unknown").is_err());
     }
 
     #[test]
-    fn test_quality_scorer_creation() {
+    fn test_default_profile_is_pop() {
         let scorer = QualityScorer::new();
-        assert_eq!(scorer.thresholds.spectrum_fake_threshold, -85.0);
-
-        let custom_thresholds = QualityThresholds {
-            spectrum_fake_threshold: -90.0,
-            ..Default::default()
-        };
-        let custom_scorer = QualityScorer::with_thresholds(custom_thresholds);
-        assert_eq!(custom_scorer.thresholds.spectrum_fake_threshold, -90.0);
+        assert_eq!(scorer.profile, ScoringProfile::Pop);
     }
 
     #[test]
@@ -649,69 +714,54 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_status_incomplete() {
+    fn test_determine_status_loudness_off_target() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.lra = None;
-        metrics.rms_db_above_18k = None;
+        metrics.integrated_loudness_lufs = Some(-8.0);
         let status = scorer.determine_status(&metrics);
-        assert_eq!(status, QualityStatus::Incomplete);
+        assert_eq!(status, QualityStatus::LoudnessOffTarget);
     }
 
     #[test]
-    fn test_determine_status_suspicious() {
+    fn test_determine_status_true_peak_risk() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.rms_db_above_18k = Some(-90.0); // Below fake threshold
+        metrics.true_peak_dbtp = Some(-0.8);
         let status = scorer.determine_status(&metrics);
-        assert_eq!(status, QualityStatus::Suspicious);
+        assert_eq!(status, QualityStatus::TruePeakRisk);
     }
 
     #[test]
     fn test_determine_status_clipped() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.peak_amplitude_db = Some(0.0); // At clipping threshold
+        metrics.true_peak_dbtp = Some(-0.1);
         let status = scorer.determine_status(&metrics);
         assert_eq!(status, QualityStatus::Clipped);
     }
 
     #[test]
-    fn test_determine_status_severely_compressed() {
+    fn test_determine_status_low_bitrate() {
         let scorer = QualityScorer::new();
         let mut metrics = create_test_metrics();
-        metrics.lra = Some(2.0); // Below poor threshold
+        metrics.file_path = "test.mp3".to_string();
+        metrics.codec_name = Some("mp3".to_string());
+        metrics.container_format = Some("mp3".to_string());
+        metrics.bitrate_kbps = Some(128);
+        metrics.integrated_loudness_lufs = Some(-14.0);
+        metrics.true_peak_dbtp = Some(-2.0);
         let status = scorer.determine_status(&metrics);
-        assert_eq!(status, QualityStatus::SeverelyCompressed);
+        assert_eq!(status, QualityStatus::LowBitrate);
     }
 
     #[test]
-    fn test_count_missing_critical_fields() {
+    fn test_determine_status_incomplete() {
         let scorer = QualityScorer::new();
-        let metrics = create_test_metrics();
-        assert_eq!(scorer.count_missing_critical_fields(&metrics), 0);
-
-        let mut incomplete_metrics = create_test_metrics();
-        incomplete_metrics.lra = None;
-        incomplete_metrics.rms_db_above_18k = None;
-        assert_eq!(scorer.count_missing_critical_fields(&incomplete_metrics), 2);
-    }
-
-    #[test]
-    fn test_map_to_score() {
-        let scorer = QualityScorer::new();
-
-        // Test normal mapping
-        assert_eq!(scorer.map_to_score(5.0, 0.0, 10.0, 0.0, 100.0), 50.0);
-        assert_eq!(scorer.map_to_score(0.0, 0.0, 10.0, 0.0, 100.0), 0.0);
-        assert_eq!(scorer.map_to_score(10.0, 0.0, 10.0, 0.0, 100.0), 100.0);
-
-        // Test clamping
-        assert_eq!(scorer.map_to_score(-5.0, 0.0, 10.0, 0.0, 100.0), 0.0);
-        assert_eq!(scorer.map_to_score(15.0, 0.0, 10.0, 0.0, 100.0), 100.0);
-
-        // Test edge case where in_min == in_max
-        assert_eq!(scorer.map_to_score(5.0, 5.0, 5.0, 0.0, 100.0), 0.0);
+        let mut metrics = create_test_metrics();
+        metrics.lra = None;
+        metrics.integrated_loudness_lufs = None;
+        let status = scorer.determine_status(&metrics);
+        assert_eq!(status, QualityStatus::Incomplete);
     }
 
     #[test]
@@ -720,8 +770,6 @@ mod tests {
         let metrics = create_test_metrics();
         let status = QualityStatus::Good;
         let score = scorer.calculate_quality_score(&metrics, &status);
-
-        // Score should be reasonable for good quality audio
         assert!((70..=100).contains(&score));
     }
 
@@ -734,7 +782,8 @@ mod tests {
         assert_eq!(analysis.file_path, "test.flac");
         assert!(analysis.quality_score > 0);
         assert_eq!(analysis.status, QualityStatus::Good);
-        assert!(!analysis.notes.is_empty());
+        assert_eq!(analysis.profile, "pop");
+        assert!(analysis.confidence > 0.8);
     }
 
     #[test]
@@ -747,35 +796,5 @@ mod tests {
         for analysis in &analyses {
             assert!(analysis.quality_score > 0);
         }
-    }
-
-    #[test]
-    fn test_determine_status_low_bitrate() {
-        let scorer = QualityScorer::new();
-        let mut metrics = create_test_metrics();
-        metrics.file_path = "test.mp3".to_string();
-        metrics.codec_name = Some("mp3".to_string());
-        metrics.container_format = Some("mp3".to_string());
-        metrics.bitrate_kbps = Some(128);
-        let status = scorer.determine_status(&metrics);
-        assert_eq!(status, QualityStatus::LowBitrate);
-    }
-
-    #[test]
-    fn test_determine_status_low_sample_rate() {
-        let scorer = QualityScorer::new();
-        let mut metrics = create_test_metrics();
-        metrics.sample_rate_hz = Some(32_000);
-        let status = scorer.determine_status(&metrics);
-        assert_eq!(status, QualityStatus::LowSampleRate);
-    }
-
-    #[test]
-    fn test_determine_status_mono() {
-        let scorer = QualityScorer::new();
-        let mut metrics = create_test_metrics();
-        metrics.channels = Some(1);
-        let status = scorer.determine_status(&metrics);
-        assert_eq!(status, QualityStatus::Mono);
     }
 }

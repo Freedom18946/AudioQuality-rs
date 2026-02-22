@@ -5,7 +5,7 @@
 ## 1. 执行模型
 
 - 每个文件内部并发执行 5 个 `ffmpeg` 任务：
-  - `ebur128` 提取 LRA
+  - `ebur128=peak=true` 提取 `LRA + Integrated LUFS + True Peak`
   - `astats` 提取 peak/rms
   - `highpass+astats` 提取 `>16k`, `>18k`, `>20k` RMS
 - 额外执行 1 个 `ffprobe` 任务提取元数据
@@ -23,10 +23,13 @@
 
 ## 3. 解析规则
 
-### LRA（ebur128）
+### 响度与真峰值（ebur128）
 
-- 优先匹配 summary 中的 `LRA: ... LU`
-- 失败时回退到流式日志中最后一个 `LRA:` 值
+- 从 summary 解析：
+  - `I: ... LUFS`（integrated loudness）
+  - `LRA: ... LU`
+  - `Peak: ... dBFS`（true peak）
+- `LRA` 和 `true peak` 支持流式日志兜底解析
 
 ### Peak / RMS（astats）
 
@@ -52,7 +55,7 @@
 
 `process_file()` 最终输出：
 
-- 音频技术指标（LRA/Peak/RMS/高频 RMS）
+- 音频技术指标（Integrated LUFS / True Peak / LRA / Peak / RMS / 高频 RMS）
 - ffprobe 元数据（采样率/码率/声道/编码器/容器/时长）
 - `processingTimeMs`
 - `errorCodes`

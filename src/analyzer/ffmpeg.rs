@@ -73,6 +73,13 @@ struct ProbeData {
     duration_seconds: Option<f64>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct Ebur128Stats {
+    lra: Option<f64>,
+    integrated_loudness_lufs: Option<f64>,
+    true_peak_dbtp: Option<f64>,
+}
+
 #[derive(Debug)]
 struct CommandOutput {
     status_ok: bool,
@@ -82,9 +89,14 @@ struct CommandOutput {
 }
 
 lazy_static! {
-    static ref EBUR128_LRA_REGEX: Regex = Regex::new(r"LRA:\s*([0-9.-]+)").unwrap();
+    static ref EBUR128_LRA_REGEX: Regex = Regex::new(r"LRA:\s*([0-9.+-]+)").unwrap();
     static ref EBUR128_SUMMARY_LRA_REGEX: Regex =
-        Regex::new(r"(?m)^LRA:\s*([0-9.-]+)\s*LU\s*$").unwrap();
+        Regex::new(r"(?m)^\s*LRA:\s*([0-9.+-]+)\s*LU\s*$").unwrap();
+    static ref EBUR128_SUMMARY_I_REGEX: Regex =
+        Regex::new(r"(?m)^\s*I:\s*([0-9.+-]+)\s*LUFS\s*$").unwrap();
+    static ref EBUR128_SUMMARY_TP_REGEX: Regex =
+        Regex::new(r"(?m)^\s*Peak:\s*([0-9.+-]+)\s*dBFS\s*$").unwrap();
+    static ref EBUR128_STREAM_TPK_REGEX: Regex = Regex::new(r"TPK:\s*([0-9.+-]+)").unwrap();
     static ref OVERALL_STATS_REGEX: Regex =
         Regex::new(r"(?s)Overall.*?Peak level dB:\s*([-\d.]+).*?RMS level dB:\s*([-\d.]+)")
             .unwrap();
@@ -174,33 +186,65 @@ fn run_command_and_get_stderr(command: Command, config: &ProcessingConfig) -> Re
     Ok(output.stderr)
 }
 
-fn get_lra_ebur128(path: &Path, config: &ProcessingConfig) -> Result<f64> {
+fn get_ebur128_stats(path: &Path, config: &ProcessingConfig) -> Result<Ebur128Stats> {
     let mut command = Command::new(&config.ffmpeg_path);
     command
         .arg("-i")
         .arg(path)
         .arg("-filter_complex")
-        .arg("ebur128")
+        .arg("ebur128=peak=true")
         .arg("-f")
         .arg("null")
         .arg("-");
 
     let stderr = run_command_and_get_stderr(command, config)?;
 
-    if let Some(caps) = EBUR128_SUMMARY_LRA_REGEX.captures(&stderr) {
-        if let Some(lra_str) = caps.get(1) {
-            return lra_str
-                .as_str()
-                .parse::<f64>()
-                .map_err(|_| anyhow!("[E_PARSE_LRA] 无法解析 LRA 数值"));
-        }
+    let lra = EBUR128_SUMMARY_LRA_REGEX
+        .captures(&stderr)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| parse_float_token(m.as_str()))
+        .or_else(|| {
+            EBUR128_LRA_REGEX
+                .captures_iter(&stderr)
+                .filter_map(|caps| caps.get(1).and_then(|m| parse_float_token(m.as_str())))
+                .last()
+        });
+
+    let integrated_loudness_lufs = EBUR128_SUMMARY_I_REGEX
+        .captures(&stderr)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| parse_float_token(m.as_str()));
+
+    let true_peak_dbtp = EBUR128_SUMMARY_TP_REGEX
+        .captures(&stderr)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| parse_float_token(m.as_str()))
+        .or_else(|| {
+            EBUR128_STREAM_TPK_REGEX
+                .captures_iter(&stderr)
+                .filter_map(|caps| caps.get(1).and_then(|m| parse_float_token(m.as_str())))
+                .last()
+        });
+
+    if lra.is_none() || integrated_loudness_lufs.is_none() {
+        return Err(anyhow!("[E_PARSE_EBUR128] 无法完整解析 ebur128 输出"));
     }
 
-    EBUR128_LRA_REGEX
-        .captures_iter(&stderr)
-        .filter_map(|caps| caps.get(1).and_then(|m| m.as_str().parse::<f64>().ok()))
-        .last()
-        .ok_or_else(|| anyhow!("[E_PARSE_LRA] 无法从 ebur128 输出中解析 LRA"))
+    Ok(Ebur128Stats {
+        lra,
+        integrated_loudness_lufs,
+        true_peak_dbtp,
+    })
+}
+
+fn parse_float_token(token: &str) -> Option<f64> {
+    let text = token.trim().to_ascii_lowercase();
+    match text.as_str() {
+        "inf" | "+inf" => Some(f64::INFINITY),
+        "-inf" => Some(f64::NEG_INFINITY),
+        "nan" => None,
+        _ => text.parse::<f64>().ok(),
+    }
 }
 
 fn get_stats_ffmpeg(path: &Path, config: &ProcessingConfig) -> Result<AudioStats> {
@@ -349,8 +393,8 @@ pub fn process_file(path: &Path, config: &ProcessingConfig) -> Result<FileMetric
     let start_time = Instant::now();
     let file_size_bytes = path.metadata()?.len();
 
-    let (lra_res, (stats_res, (rms_16k_res, (rms_18k_res, rms_20k_res)))) = rayon::join(
-        || get_lra_ebur128(path, config),
+    let (ebur_res, (stats_res, (rms_16k_res, (rms_18k_res, rms_20k_res)))) = rayon::join(
+        || get_ebur128_stats(path, config),
         || {
             rayon::join(
                 || get_stats_ffmpeg(path, config),
@@ -374,11 +418,15 @@ pub fn process_file(path: &Path, config: &ProcessingConfig) -> Result<FileMetric
 
     let mut error_codes = Vec::new();
 
-    let lra = match lra_res {
-        Ok(value) => Some(value),
+    let (lra, integrated_loudness_lufs, true_peak_dbtp) = match ebur_res {
+        Ok(stats) => (
+            stats.lra,
+            stats.integrated_loudness_lufs,
+            stats.true_peak_dbtp,
+        ),
         Err(err) => {
-            error_codes.push(extract_error_code(&err, "E_LRA"));
-            None
+            error_codes.push(extract_error_code(&err, "E_EBUR128"));
+            (None, None, None)
         }
     };
 
@@ -434,6 +482,8 @@ pub fn process_file(path: &Path, config: &ProcessingConfig) -> Result<FileMetric
         rms_db_above_16k,
         rms_db_above_18k,
         rms_db_above_20k,
+        integrated_loudness_lufs,
+        true_peak_dbtp,
         processing_time_ms,
         sample_rate_hz: probe.sample_rate_hz,
         bitrate_kbps: probe.bitrate_kbps,

@@ -152,6 +152,8 @@ mod tests {
             rms_db_above_16k: None,
             rms_db_above_18k: None,
             rms_db_above_20k: None,
+            integrated_loudness_lufs: None,
+            true_peak_dbtp: None,
             processing_time_ms: 1,
             sample_rate_hz: None,
             bitrate_kbps: None,
